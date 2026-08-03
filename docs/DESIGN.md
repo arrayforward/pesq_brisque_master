@@ -34,10 +34,14 @@
 - 每 100ms `acquireLatestImage` 取最新帧，双线性降采样到 512 宽
 - 每帧同时保存：灰度字节数组（内存，供打分）+ JPEG 文件（`files/frames/`，供查看/另存）
 
-### 录音
-- `AudioPlaybackCaptureConfiguration` 匹配 USAGE_MEDIA/GAME/UNKNOWN，绑定同一 MediaProjection 令牌
-- 16kHz 单声道 PCM16，采集期间循环读入内存缓冲
-- 目标 App 禁止采集时录到静音：通过最大振幅检测并在日志中提示
+### 录音（三模式 + 自动降级）
+- **系统回放采集**：`AudioPlaybackCaptureConfiguration` 匹配 USAGE_MEDIA/GAME/UNKNOWN，绑定同一 MediaProjection 令牌，数字链路保真最高
+- **麦克风**：`AudioRecord(MIC)` 录外放链路，任何设备可用
+- **自动模式（默认）**：优先回放采集；以下任一情况自动降级为麦克风并继续：
+  1. `AudioRecord` 构造/初始化失败（设备不支持回放采集）
+  2. 录制 2 秒后全程最大振幅为 0（目标 App 禁止被采集，录到静音）
+- 录音线程全部代码包在 try/catch 内：无 RECORD_AUDIO 权限、系统拒绝 audio policy 注册等场景只上报错误，不崩溃
+- 结果卡片与日志标注实际采集模式，避免两种链路的分数被直接比较
 
 ### 时序
 ```
@@ -84,8 +88,10 @@ ITU 官方参考代码已编译进 `libpesqjni`，`Pesq.measure(sampleRate, ref,
 |---|---|
 | `ForegroundServiceDidNotStartInTimeException` | 进入服务立即 startForeground，重活（模型加载）全部放后台线程 |
 | `SecurityException: Media projections require...`(Android 10) | startForeground(带类型) 必须先于 getMediaProjection |
+| 某些机型倒计时结束"跳后台" | 根因：`AudioRecord` 构造在 try 外，回放采集不支持时 FATAL 崩溃；已修复为全流程捕获 |
 | 切走后进度"停止" | 接收器在 onCreate 注册、onDestroy 注销，不再跟随 onPause |
 | 帧内存占用 | 降采样到 512 宽，灰度存 byte[]，JPEG 落盘 |
+| 麦克风模式合规 | 前台服务类型声明 `mediaProjection\|microphone` + `FOREGROUND_SERVICE_MICROPHONE` 权限 |
 | EMUI 安装确认框 | adb 安装需在手机上点"继续安装" |
 
 ## 5. 域适配说明（为何分数"不合理"）
