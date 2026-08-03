@@ -43,11 +43,13 @@ public class MainActivity extends Activity {
     private ProgressBar progressBar;
     private Button btnStart, btnMos;
     private EditText etCountdown, etCaptureSec, etMosDuration;
+    private android.widget.RadioGroup rgAudioMode;
     private FrameAdapter adapter;
 
     private double audioMos = Double.NaN;
     private double audioP563 = Double.NaN;
     private String audioDetail = null;
+    private String audioModeLabel = null;
 
     private final BroadcastReceiver eventReceiver = new BroadcastReceiver() {
         @Override
@@ -103,6 +105,11 @@ public class MainActivity extends Activity {
                     audioDetail = msg;
                     renderAudio();
                     break;
+                case "audio_mode":
+                    audioModeLabel = msg;
+                    renderAudio();
+                    appendLog("音频采集模式: " + msg);
+                    break;
                 case "mos_seg": {
                     int idx = intent.getIntExtra(CaptureService.EXTRA_IDX, 0);
                     double p563 = intent.getDoubleExtra(CaptureService.EXTRA_AVG, 0);
@@ -152,6 +159,7 @@ public class MainActivity extends Activity {
         etCountdown = findViewById(R.id.etCountdown);
         etCaptureSec = findViewById(R.id.etCaptureSec);
         etMosDuration = findViewById(R.id.etMosDuration);
+        rgAudioMode = findViewById(R.id.rgAudioMode);
 
         tabAV = findViewById(R.id.tabAV);
         tabAudio = findViewById(R.id.tabAudio);
@@ -270,6 +278,7 @@ public class MainActivity extends Activity {
         audioMos = Double.NaN;
         audioP563 = Double.NaN;
         audioDetail = null;
+        audioModeLabel = null;
         adapter.clear();
         tvStatMax.setText("--");
         tvStatMin.setText("--");
@@ -326,16 +335,30 @@ public class MainActivity extends Activity {
         i.putExtra(CaptureService.EXTRA_RESULT_CODE, resultCode);
         i.putExtra(CaptureService.EXTRA_RESULT_DATA, data);
         i.putExtra(CaptureService.EXTRA_COUNTDOWN_SEC, readInt(etCountdown, 5));
+        int mode = CaptureService.AUDIO_MODE_AUTO;
+        int checked = rgAudioMode.getCheckedRadioButtonId();
+        if (checked == R.id.rbPlayback) mode = CaptureService.AUDIO_MODE_PLAYBACK;
+        else if (checked == R.id.rbMic) mode = CaptureService.AUDIO_MODE_MIC;
+        i.putExtra(CaptureService.EXTRA_AUDIO_MODE, mode);
         i.putExtra(CaptureService.EXTRA_DURATION_SEC,
                 requestCode == REQ_PROJECTION_MOS
                         ? readInt(etMosDuration, 30) : readInt(etCaptureSec, 10));
-        startForegroundService(i);
-        btnStart.setEnabled(false);
-        btnMos.setEnabled(false);
+        try {
+            startForegroundService(i);
+            btnStart.setEnabled(false);
+            btnMos.setEnabled(false);
+        } catch (Throwable t) {
+            tvStatus.setText("启动评估服务失败");
+            appendLog("ERROR 启动前台服务失败: " + t.getClass().getName() + ": " + t.getMessage());
+            toast("启动失败: " + t.getMessage());
+        }
     }
 
     private void renderAudio() {
         StringBuilder sb = new StringBuilder();
+        if (audioModeLabel != null) {
+            sb.append("采集模式: ").append(audioModeLabel).append("\n");
+        }
         if (!Double.isNaN(audioMos)) {
             sb.append(String.format(Locale.US, "MOSNet MOS: %.2f / 5.0 (%s)\n",
                     audioMos, mosQuality(audioMos)));

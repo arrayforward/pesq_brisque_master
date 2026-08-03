@@ -336,6 +336,42 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:text="音频采集模式"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp" />
+
+                <RadioGroup
+                    android:id="@+id/rgAudioMode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <RadioButton
+                        android:id="@+id/rbAuto"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:checked="true"
+                        android:text="自动 (回放采集失败时降级为麦克风)"
+                        android:textSize="13sp" />
+
+                    <RadioButton
+                        android:id="@+id/rbPlayback"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="系统回放采集 (数字链路)"
+                        android:textSize="13sp" />
+
+                    <RadioButton
+                        android:id="@+id/rbMic"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="麦克风 (外放链路, 需环境安静)"
+                        android:textSize="13sp" />
+                </RadioGroup>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
                     android:text="等待时长 (秒, 切换目标 App 的时间)"
                     android:textColor="@color/text_primary"
                     android:textSize="14sp" />

@@ -45,6 +45,11 @@ public class CaptureService extends Service {
     public static final String EXTRA_RESULT_DATA = "resultData";
     public static final String EXTRA_DURATION_SEC = "durationSec";
     public static final String EXTRA_COUNTDOWN_SEC = "countdownSec";
+    public static final String EXTRA_AUDIO_MODE = "audioMode";
+
+    public static final int AUDIO_MODE_AUTO = 0;
+    public static final int AUDIO_MODE_PLAYBACK = 1;
+    public static final int AUDIO_MODE_MIC = 2;
 
     public static final String EXTRA_TYPE = "type";
     public static final String EXTRA_T = "t";
@@ -77,6 +82,7 @@ public class CaptureService extends Service {
     private int mosDurationSec = 30;
     private int captureSec = 10;
     private int countdownSec = 5;
+    private int audioMode = AUDIO_MODE_AUTO;
 
     private final ByteArrayOutputStream audioBuf = new ByteArrayOutputStream();
     private final List<byte[]> frames = new ArrayList<>();
@@ -118,6 +124,7 @@ public class CaptureService extends Service {
         }
         countdownSec = Math.max(0, Math.min(30,
                 intent.getIntExtra(EXTRA_COUNTDOWN_SEC, 5)));
+        audioMode = intent.getIntExtra(EXTRA_AUDIO_MODE, AUDIO_MODE_AUTO);
 
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
         Intent data = intent.getParcelableExtra(EXTRA_RESULT_DATA);
@@ -129,7 +136,8 @@ public class CaptureService extends Service {
 
         try {
             startForeground(NOTIF_ID, buildNotification(),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                            | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         } catch (Throwable t) {
             emitError("启动前台服务(startForeground)", t);
             stopSelf();
@@ -335,48 +343,112 @@ public class CaptureService extends Service {
         nm.notify(NOTIF_ID, buildNotification(text));
     }
 
+    private volatile boolean useMic = false;
+
     private void startAudio() {
-        audioThread = new Thread(() -> {
+        useMic = (audioMode == AUDIO_MODE_MIC);
+        audioThread = new Thread(this::recordLoop, "audio-rec");
+        audioThread.start();
+    }
+
+    private void emitAudioMode(String label) {
+        Intent i = new Intent(ACTION_EVENT).setPackage(getPackageName());
+        i.putExtra(EXTRA_TYPE, "audio_mode");
+        i.putExtra(EXTRA_MSG, label);
+        sendBroadcast(i);
+    }
+
+    private AudioRecord buildPlaybackRecord() {
+        AudioPlaybackCaptureConfiguration captureConfig =
+                new AudioPlaybackCaptureConfiguration.Builder(projection)
+                        .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                        .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                        .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                        .build();
+        AudioFormat format = new AudioFormat.Builder()
+                .setSampleRate(sampleRate)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .build();
+        int minBuf = AudioRecord.getMinBufferSize(sampleRate,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioRecord record = new AudioRecord.Builder()
+                .setAudioPlaybackCaptureConfig(captureConfig)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(Math.max(minBuf, 8192))
+                .build();
+        if (record.getState() != AudioRecord.STATE_INITIALIZED) {
+            record.release();
+            return null;
+        }
+        return record;
+    }
+
+    private AudioRecord buildMicRecord() {
+        int minBuf = AudioRecord.getMinBufferSize(sampleRate,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioRecord record = new AudioRecord(android.media.MediaRecorder.AudioSource.MIC,
+                sampleRate, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, Math.max(minBuf, 8192));
+        if (record.getState() != AudioRecord.STATE_INITIALIZED) {
+            record.release();
+            return null;
+        }
+        return record;
+    }
+
+    private void recordLoop() {
+        while (running) {
             AudioRecord record = null;
+            boolean fallback = false;
             try {
-                AudioPlaybackCaptureConfiguration captureConfig =
-                        new AudioPlaybackCaptureConfiguration.Builder(projection)
-                                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                                .build();
-                AudioFormat format = new AudioFormat.Builder()
-                        .setSampleRate(sampleRate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                        .build();
-                int minBuf = AudioRecord.getMinBufferSize(sampleRate,
-                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-                record = new AudioRecord.Builder()
-                        .setAudioPlaybackCaptureConfig(captureConfig)
-                        .setAudioFormat(format)
-                        .setBufferSizeInBytes(Math.max(minBuf, 8192))
-                        .build();
-                if (record.getState() != AudioRecord.STATE_INITIALIZED) {
-                    emit("error", "系统声音采集初始化失败: AudioRecord 状态异常 "
-                            + "(可能目标 App 禁止被采集, 或系统不支持回放采集)");
-                    return;
+                if (useMic) {
+                    emitAudioMode("麦克风模式");
+                    record = buildMicRecord();
+                    if (record == null) throw new IllegalStateException("麦克风初始化失败");
+                } else {
+                    emitAudioMode("数字采集 (系统回放)");
+                    record = buildPlaybackRecord();
+                    if (record == null) {
+                        throw new IllegalStateException("回放采集初始化失败 (设备或目标 App 不支持)");
+                    }
                 }
                 record.startRecording();
                 byte[] buf = new byte[4096];
+                long samplesRead = 0;
+                int maxAbs = 0;
                 while (running) {
                     int n = record.read(buf, 0, buf.length);
                     if (n > 0) {
                         synchronized (audioBuf) {
                             audioBuf.write(buf, 0, n);
                         }
+                        samplesRead += n / 2;
+                        if (!useMic && audioMode == AUDIO_MODE_AUTO
+                                && samplesRead < sampleRate * 3) {
+                            for (int i = 0; i + 1 < n; i += 2) {
+                                int a = Math.abs((short) ((buf[i] & 0xff) | (buf[i + 1] << 8)));
+                                if (a > maxAbs) maxAbs = a;
+                            }
+                            if (samplesRead >= sampleRate * 2 && maxAbs == 0) {
+                                emit("error", "回放采集为静音 (目标 App 禁止被采集), 自动切换为麦克风模式");
+                                useMic = true;
+                                fallback = true;
+                                break;
+                            }
+                        }
                     } else if (n < 0) {
-                        emit("error", "录音读取错误: AudioRecord.read 返回 " + n);
-                        break;
+                        throw new IllegalStateException("AudioRecord.read 返回 " + n);
                     }
                 }
             } catch (Throwable t) {
-                emitError("录制系统声音(AudioRecord)", t);
+                if (!useMic && audioMode == AUDIO_MODE_AUTO) {
+                    emitError("回放采集不可用, 降级为麦克风模式", t);
+                    useMic = true;
+                    fallback = true;
+                } else {
+                    emitError("录制声音(AudioRecord)", t);
+                }
             } finally {
                 if (record != null) {
                     try {
@@ -386,8 +458,8 @@ public class CaptureService extends Service {
                     record.release();
                 }
             }
-        }, "audio-rec");
-        audioThread.start();
+            if (!fallback) break;
+        }
     }
 
     private void captureFrame() {
