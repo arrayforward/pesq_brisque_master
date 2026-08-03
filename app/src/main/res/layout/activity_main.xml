@@ -57,6 +57,15 @@
             android:textSize="13sp" />
 
         <TextView
+            android:id="@+id/tabFile"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="本地视频"
+            android:textSize="13sp" />
+
+        <TextView
             android:id="@+id/tabConfig"
             android:layout_width="0dp"
             android:layout_height="44dp"
@@ -312,6 +321,58 @@
         android:visibility="gone" />
 
     <ScrollView
+        android:id="@+id/panelFile"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <Button
+                android:id="@+id/btnPickVideo"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:background="@drawable/bg_btn_primary"
+                android:text="选择视频文件"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/tvVideoName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="未选择文件"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnStartFile"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_btn_primary"
+                android:text="开始评估视频 (BRISQUE + 音轨 MOS)"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="直接解码本地视频文件: 按配置页设定的间隔抽帧做 BRISQUE 打分, 并解码音轨做 MOSNet + P.563 评分。无需投屏授权。帧结果在「画面+音频」Tab 的逐帧列表中展示。"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <ScrollView
         android:id="@+id/panelConfig"
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -382,6 +443,21 @@
                     android:layout_height="wrap_content"
                     android:inputType="number"
                     android:text="5" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="本地视频抽帧间隔 (毫秒)"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp" />
+
+                <EditText
+                    android:id="@+id/etFrameInterval"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="200" />
 
                 <TextView
                     android:layout_width="wrap_content"

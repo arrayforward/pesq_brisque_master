@@ -36,14 +36,16 @@ public class MainActivity extends Activity {
     private static final int REQ_PERMISSIONS = 1;
     private static final int REQ_PROJECTION = 2;
     private static final int REQ_PROJECTION_MOS = 3;
+    private static final int REQ_VIDEO = 4;
 
     private TextView tvStatus, tvCountdown, tvStatMax, tvStatMin, tvStatAvg, tvStatTrim, tvAudio, tvLog;
-    private TextView tabAV, tabAudio, tabLog, tabConfig;
-    private ScrollView panelAV, panelAudio, panelConfig;
+    private TextView tabAV, tabAudio, tabLog, tabConfig, tabFile, tvVideoName;
+    private ScrollView panelAV, panelAudio, panelConfig, panelFile;
     private ProgressBar progressBar;
-    private Button btnStart, btnMos;
-    private EditText etCountdown, etCaptureSec, etMosDuration;
+    private Button btnStart, btnMos, btnPickVideo, btnStartFile;
+    private EditText etCountdown, etCaptureSec, etMosDuration, etFrameInterval;
     private android.widget.RadioGroup rgAudioMode;
+    private Uri videoUri = null;
     private FrameAdapter adapter;
 
     private double audioMos = Double.NaN;
@@ -134,6 +136,7 @@ public class MainActivity extends Activity {
                     progressBar.setProgress(100);
                     btnStart.setEnabled(true);
                     btnMos.setEnabled(true);
+                    btnStartFile.setEnabled(true);
                     break;
             }
         }
@@ -165,15 +168,30 @@ public class MainActivity extends Activity {
         tabAudio = findViewById(R.id.tabAudio);
         tabLog = findViewById(R.id.tabLog);
         tabConfig = findViewById(R.id.tabConfig);
+        tabFile = findViewById(R.id.tabFile);
         panelAV = findViewById(R.id.panelAV);
         panelAudio = findViewById(R.id.panelAudio);
         panelConfig = findViewById(R.id.panelConfig);
+        panelFile = findViewById(R.id.panelFile);
+        tvVideoName = findViewById(R.id.tvVideoName);
+        btnPickVideo = findViewById(R.id.btnPickVideo);
+        btnStartFile = findViewById(R.id.btnStartFile);
+        etFrameInterval = findViewById(R.id.etFrameInterval);
 
         tabAV.setOnClickListener(v -> selectTab(0));
         tabAudio.setOnClickListener(v -> selectTab(1));
         tabLog.setOnClickListener(v -> selectTab(2));
         tabConfig.setOnClickListener(v -> selectTab(3));
+        tabFile.setOnClickListener(v -> selectTab(4));
         selectTab(0);
+
+        btnPickVideo.setOnClickListener(v -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("video/*");
+            startActivityForResult(i, REQ_VIDEO);
+        });
+        btnStartFile.setOnClickListener(v -> beginFile());
 
         ListView lv = findViewById(R.id.lvFrames);
         adapter = new FrameAdapter();
@@ -207,10 +225,12 @@ public class MainActivity extends Activity {
         panelAudio.setVisibility(which == 1 ? View.VISIBLE : View.GONE);
         tvLog.setVisibility(which == 2 ? View.VISIBLE : View.GONE);
         panelConfig.setVisibility(which == 3 ? View.VISIBLE : View.GONE);
+        panelFile.setVisibility(which == 4 ? View.VISIBLE : View.GONE);
         styleTab(tabAV, which == 0);
         styleTab(tabAudio, which == 1);
         styleTab(tabLog, which == 2);
         styleTab(tabConfig, which == 3);
+        styleTab(tabFile, which == 4);
     }
 
     private void styleTab(TextView tab, boolean selected) {
@@ -321,9 +341,46 @@ public class MainActivity extends Activity {
         startActivityForResult(mpm.createScreenCaptureIntent(), REQ_PROJECTION_MOS);
     }
 
+    private void beginFile() {
+        if (videoUri == null) {
+            toast("请先选择视频文件");
+            return;
+        }
+        resetResults();
+        tvCountdown.setVisibility(View.GONE);
+        Intent i = new Intent(this, CaptureService.class).setAction(CaptureService.ACTION_FILE);
+        i.putExtra(CaptureService.EXTRA_VIDEO_URI, videoUri.toString());
+        i.putExtra(CaptureService.EXTRA_FRAME_INTERVAL_MS, readInt(etFrameInterval, 200));
+        try {
+            startForegroundService(i);
+            btnStart.setEnabled(false);
+            btnMos.setEnabled(false);
+            btnStartFile.setEnabled(false);
+        } catch (Throwable t) {
+            appendLog("ERROR 启动评估服务失败: " + t.getMessage());
+            toast("启动失败: " + t.getMessage());
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_VIDEO) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                videoUri = data.getData();
+                String name = videoUri.getLastPathSegment();
+                android.database.Cursor c = getContentResolver().query(videoUri, null,
+                        null, null, null);
+                if (c != null) {
+                    int idx = c.getColumnIndex(
+                            android.provider.OpenableColumns.DISPLAY_NAME);
+                    if (idx >= 0 && c.moveToFirst()) name = c.getString(idx);
+                    c.close();
+                }
+                tvVideoName.setText("已选择: " + name);
+            }
+            return;
+        }
         if (requestCode != REQ_PROJECTION && requestCode != REQ_PROJECTION_MOS) return;
         if (resultCode != RESULT_OK || data == null) {
             toast("未授权截屏/系统声音采集");

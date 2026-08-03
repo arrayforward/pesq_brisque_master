@@ -51,6 +51,11 @@
 → 音频 MOSNet/P.563 推理(长录音按 10s 分段) → done
 ```
 
+### 本地视频文件模式
+- 抽帧：`MediaMetadataRetriever.getFrameAtTime(OPTION_CLOSEST)` 按配置间隔（默认 200ms）抽帧 → 缩放到 512 宽 → BRISQUE
+- 音轨：`MediaExtractor` 选音轨 → `MediaCodec` 解码为 PCM → 多声道混单声道 → 线性重采样到 16kHz → MOSNet / P.563 / 频谱指标
+- 无需 MediaProjection 授权，前台服务仅起保活作用
+
 ## 3. 评分算法
 
 ### BRISQUE（画面，纯 Java）
