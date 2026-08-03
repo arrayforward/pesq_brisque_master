@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#3D5AFE</color>
+    <color name="primary_dark">#0031CA</color>
+    <color name="accent">#FF6D00</color>
+    <color name="window_bg">#F4F6FB</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="text_primary">#212121</color>
+    <color name="text_secondary">#757575</color>
+    <color name="q_good">#2E7D32</color>
+    <color name="q_ok">#00838F</color>
+    <color name="q_mid">#EF6C00</color>
+    <color name="q_bad">#C62828</color>
+</resources>
