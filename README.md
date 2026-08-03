@@ -1,4 +1,4 @@
-# PesqMeter — 画面 BRISQUE + 音频无参考质量评估 (Android)
+# PesqBrisqueMaster — 画面 BRISQUE + 音频无参考质量评估 (Android)
 
 面向 Android 10+ 的音画质量评估工具：通过 `MediaProjection` 定时截屏评估画面质量（BRISQUE），通过 `AudioPlaybackCapture` 直接录制系统播放的声音，用 **MOSNet** 和 **ITU-T P.563** 两个无参考模型输出 MOS 分。UI 全部使用系统原生控件（不依赖 AndroidX），四个 Tab 页：画面+音频、音频、日志、配置。
 
