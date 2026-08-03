@@ -337,25 +337,26 @@ public class CaptureService extends Service {
 
     private void startAudio() {
         audioThread = new Thread(() -> {
-            AudioPlaybackCaptureConfiguration captureConfig =
-                    new AudioPlaybackCaptureConfiguration.Builder(projection)
-                            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                            .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                            .build();
-            AudioFormat format = new AudioFormat.Builder()
-                    .setSampleRate(sampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                    .build();
-            int minBuf = AudioRecord.getMinBufferSize(sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            AudioRecord record = new AudioRecord.Builder()
-                    .setAudioPlaybackCaptureConfig(captureConfig)
-                    .setAudioFormat(format)
-                    .setBufferSizeInBytes(Math.max(minBuf, 8192))
-                    .build();
+            AudioRecord record = null;
             try {
+                AudioPlaybackCaptureConfiguration captureConfig =
+                        new AudioPlaybackCaptureConfiguration.Builder(projection)
+                                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                                .build();
+                AudioFormat format = new AudioFormat.Builder()
+                        .setSampleRate(sampleRate)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .build();
+                int minBuf = AudioRecord.getMinBufferSize(sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                record = new AudioRecord.Builder()
+                        .setAudioPlaybackCaptureConfig(captureConfig)
+                        .setAudioFormat(format)
+                        .setBufferSizeInBytes(Math.max(minBuf, 8192))
+                        .build();
                 if (record.getState() != AudioRecord.STATE_INITIALIZED) {
                     emit("error", "系统声音采集初始化失败: AudioRecord 状态异常 "
                             + "(可能目标 App 禁止被采集, 或系统不支持回放采集)");
@@ -377,11 +378,13 @@ public class CaptureService extends Service {
             } catch (Throwable t) {
                 emitError("录制系统声音(AudioRecord)", t);
             } finally {
-                try {
-                    record.stop();
-                } catch (Exception ignored) {
+                if (record != null) {
+                    try {
+                        record.stop();
+                    } catch (Exception ignored) {
+                    }
+                    record.release();
                 }
-                record.release();
             }
         }, "audio-rec");
         audioThread.start();
