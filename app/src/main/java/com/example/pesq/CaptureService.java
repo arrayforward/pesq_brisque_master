@@ -500,7 +500,7 @@ public class CaptureService extends Service {
                 frames.add(gray);
                 idx = frames.size();
             }
-            saveFrameJpeg(pixels, idx);
+            saveFrameJpeg(pixels, grayW, grayH, idx);
             if (idx % 10 == 0) emit("progress", "已采集 " + idx + " 帧");
         } catch (Throwable t) {
             emitError("截屏取帧", t);
@@ -557,10 +557,10 @@ public class CaptureService extends Service {
         return (int) Math.round(top + (bot - top) * wy);
     }
 
-    private void saveFrameJpeg(int[] pixels, int idx) {
+    private void saveFrameJpeg(int[] pixels, int w, int h, int idx) {
         try {
             android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
-                    pixels, grayW, grayH, android.graphics.Bitmap.Config.ARGB_8888);
+                    pixels, w, h, android.graphics.Bitmap.Config.ARGB_8888);
             File f = new File(getFilesDir(), String.format(Locale.US, "frames/frame_%03d.jpg", idx));
             FileOutputStream fos = new FileOutputStream(f);
             bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, fos);
@@ -739,7 +739,7 @@ public class CaptureService extends Service {
                             + 0.7154 * ((p >> 8) & 0xff) + 0.0721 * (p & 0xff)) / 255.0);
                 }
                 idx++;
-                saveFrameJpeg(pixels, idx);
+                saveFrameJpeg(pixels, gw, gh, idx);
                 double s = brisque.score(gray, gw, gh);
                 scores.add(s);
                 Intent fi = new Intent(ACTION_EVENT).setPackage(getPackageName());

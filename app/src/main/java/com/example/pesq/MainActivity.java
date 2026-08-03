@@ -38,7 +38,7 @@ public class MainActivity extends Activity {
     private static final int REQ_PROJECTION_MOS = 3;
     private static final int REQ_VIDEO = 4;
 
-    private TextView tvStatus, tvCountdown, tvStatMax, tvStatMin, tvStatAvg, tvStatTrim, tvAudio, tvLog;
+    private TextView tvStatus, tvCountdown, tvStatMax, tvStatMin, tvStatAvg, tvStatTrim, tvAudio, tvAudioFile, tvLog;
     private TextView tabAV, tabAudio, tabLog, tabConfig, tabFile, tvVideoName;
     private ScrollView panelAV, panelAudio, panelConfig, panelFile;
     private ProgressBar progressBar;
@@ -174,6 +174,7 @@ public class MainActivity extends Activity {
         panelConfig = findViewById(R.id.panelConfig);
         panelFile = findViewById(R.id.panelFile);
         tvVideoName = findViewById(R.id.tvVideoName);
+        tvAudioFile = findViewById(R.id.tvAudioFile);
         btnPickVideo = findViewById(R.id.btnPickVideo);
         btnStartFile = findViewById(R.id.btnStartFile);
         etFrameInterval = findViewById(R.id.etFrameInterval);
@@ -427,6 +428,7 @@ public class MainActivity extends Activity {
         if (audioDetail != null) sb.append(audioDetail);
         if (sb.length() == 0) sb.append("音频质量: 等待评估…");
         tvAudio.setText(sb.toString());
+        if (tvAudioFile != null) tvAudioFile.setText(sb.toString());
     }
 
     static String fmt(double v) {

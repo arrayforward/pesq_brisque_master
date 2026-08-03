@@ -369,6 +369,18 @@
                 android:text="直接解码本地视频文件: 按配置页设定的间隔抽帧做 BRISQUE 打分, 并解码音轨做 MOSNet + P.563 评分。无需投屏授权。帧结果在「画面+音频」Tab 的逐帧列表中展示。"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/tvAudioFile"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_card"
+                android:elevation="2dp"
+                android:padding="14dp"
+                android:text="音频质量: 等待评估…"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp" />
         </LinearLayout>
     </ScrollView>
 
