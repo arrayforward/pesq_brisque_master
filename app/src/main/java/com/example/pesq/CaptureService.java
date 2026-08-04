@@ -309,6 +309,15 @@ public class CaptureService extends Service {
                 if (len < sampleRate * 3) continue;
                 short[] seg = new short[len];
                 System.arraycopy(deg, from, seg, 0, len);
+                int segMax = 0;
+                for (short v : seg) {
+                    int a = Math.abs(v);
+                    if (a > segMax) segMax = a;
+                }
+                if (segMax < 100) {
+                    emit("status", "第 " + (s + 1) + "/" + segs + " 段为静音, 跳过评分");
+                    continue;
+                }
                 float mosnet = mosnetOk ? MosNet.measure(seg) : -1;
                 float p563 = P563.nativeMeasure(P563.downsample16to8(seg));
                 mosnetSum += mosnet;
@@ -625,6 +634,7 @@ public class CaptureService extends Service {
         } catch (Exception ignored) {
         }
         emit("status", "录制样本 " + deg.length + " 个, 最大振幅 " + maxAbs);
+        final int degMaxAbs = maxAbs;
 
         emit("status", "采集结束, 共 " + captured.size() + " 帧, 正在打分…");
         new Thread(() -> {
@@ -675,7 +685,9 @@ public class CaptureService extends Service {
                 sendBroadcast(stats);
             }
             if (deg.length > sampleRate) {
-                if (MosNet.init(this)) {
+                if (degMaxAbs < 100) {
+                    emit("error", "录音为静音 (最大振幅 " + degMaxAbs + "), 跳过 MOS 评分");
+                } else if (MosNet.init(this)) {
                     emit("status", "MOSNet / P.563 推理中…");
                     float mos = MosNet.measure(deg);
                     float p563 = P563.nativeMeasure(P563.downsample16to8(deg));
@@ -797,6 +809,15 @@ public class CaptureService extends Service {
     }
 
     private void emitAudioScores(short[] deg) {
+        int maxAbs = 0;
+        for (short v : deg) {
+            int a = Math.abs(v);
+            if (a > maxAbs) maxAbs = a;
+        }
+        if (maxAbs < 100) {
+            emit("error", "录音为静音 (最大振幅 " + maxAbs + "), 跳过 MOS 评分");
+            return;
+        }
         if (MosNet.init(this)) {
             emit("status", "MOSNet / P.563 推理中…");
             float mos = MosNet.measure(deg);
