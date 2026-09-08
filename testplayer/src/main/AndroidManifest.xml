@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 测试播放器：内置 chirp 测试音频，自动循环播放，配合 PC 端 scrcpy 采集做全参考音质评价。
+         播放的是 App 自己的资源，不需要任何录音/存储权限。
+         allowAudioPlaybackCapture 显式打开，确保系统回放采集（scrcpy/AudioPlaybackCapture）能抓到。 -->
+    <application
+        android:allowAudioPlaybackCapture="true"
+        android:label="TestPlayer"
+        android:theme="@android:style/Theme.Material.Light">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

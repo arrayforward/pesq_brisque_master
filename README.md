@@ -204,3 +204,14 @@ app/src/main/
 │   └── mosnet_weights.bin       # MOSNet 权重 (h5 导出)
 └── res/                         # 布局/样式/图标
 ```
+
+## 八、附：音乐播放端到端音质评价工具（tools/musicq）
+
+`tools/musicq/` 是独立的 PC 端 Python 管线，用于评价**音频直播播放器在受限设备上的最终播出音质**（与本 App 的无参考评估互补）：
+
+- **测试音源**：批量把曲库（如 `D:\music`）加工成内嵌 chirp 导频标记的 48kHz 测试音频
+- **采集**：scrcpy 抓取系统播放输出（adb shell 播放捕获通道，无需录音权限）
+- **对齐**：chirp 匹配滤波检测 → 网格匹配 → 分段撤销播放器的网络自适应伸缩（TSM）形变 → 亚采样精对齐
+- **评分**：ViSQOLAudio（全参考，音乐适用）+ 可选 PEAQ 外部二进制 + SNR/THD+N，分段打分 + 中位数/P10/P90 聚合 + 质量曲线
+
+使用说明见 `docs/MUSICQ_USAGE.md`；算法原理与 CLI 参考见 `tools/musicq/README.md`。

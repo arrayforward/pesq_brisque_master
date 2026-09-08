@@ -1,7 +1,12 @@
 .gradle/
 build/
 app/build/
+testplayer/build/
 local.properties
 *.iml
 .idea/
 .cxx/
+*.apk
+release/
+# 测试音频体积大（>100MB）不入库，构建前用 testplayer/copy_assets.bat 从生成目录拷贝
+testplayer/src/main/assets/*.wav

@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "PesqMeter"
 include(":app")
+include(":testplayer")
