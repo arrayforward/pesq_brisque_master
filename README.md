@@ -1,6 +1,9 @@
-# PesqBrisqueMaster — 画面 BRISQUE + 音频无参考质量评估 (Android)
+# PesqBrisqueMaster — 音画质量评估工具集
 
-面向 Android 10+ 的音画质量评估工具：通过 `MediaProjection` 定时截屏评估画面质量（BRISQUE），通过 `AudioPlaybackCapture` 直接录制系统播放的声音，用 **MOSNet** 和 **ITU-T P.563** 两个无参考模型输出 MOS 分。UI 全部使用系统原生控件（不依赖 AndroidX），四个 Tab 页：画面+音频、音频、日志、配置。
+本仓库包含两个互补的产品：
+
+1. **PesqBrisqueMaster（Android App）**：画面 BRISQUE + 音频无参考质量评估。通过 `MediaProjection` 定时截屏评估画面质量（BRISQUE），通过 `AudioPlaybackCapture` 直接录制系统播放的声音，用 **MOSNet** 和 **ITU-T P.563** 两个无参考模型输出 MOS 分。UI 全部使用系统原生控件（不依赖 AndroidX），四个 Tab 页：画面+音频、音频、日志、配置。
+2. **musicq（PC 端音质评价系统）**：面向音频直播播放器**最终播出音质**的全参考评价。内嵌 chirp 导频的专用测试音频 + scrcpy 采集 + 自动对齐（撤销播放器网络自适应伸缩形变）+ ViSQOL 打分，配 Qt6 GUI 与开箱即用的 Windows 发布包（内置引擎/scrcpy/ffmpeg）。详见 `docs/MUSICQ_USAGE.md`（使用）与 `docs/MUSICQ_DESIGN.md`（设计）。
 
 ---
 
@@ -203,15 +206,28 @@ app/src/main/
 │   ├── brisque_svm.txt          # BRISQUE SVM 模型
 │   └── mosnet_weights.bin       # MOSNet 权重 (h5 导出)
 └── res/                         # 布局/样式/图标
+
+testplayer/                      # musicq 配套极简测试播放器（开屏自动播放、双曲循环）
+│                                # 注意：assets 的两首测试 wav 不入库（.gitignore 排除），
+│                                # 构建前先跑 testplayer/copy_assets.bat 从生成目录拷贝
+tools/
+├── musicq/                      # musicq Python 引擎（chirp 对齐 + ViSQOL/PEAQ 评分管线）
+└── musicq_gui/                  # musicq 的 Qt6 Windows GUI（C++ 外壳，QProcess 调引擎）
 ```
 
-## 八、附：音乐播放端到端音质评价工具（tools/musicq）
+## 八、附：musicq 音乐播放端到端音质评价系统
 
-`tools/musicq/` 是独立的 PC 端 Python 管线，用于评价**音频直播播放器在受限设备上的最终播出音质**（与本 App 的无参考评估互补）：
+`tools/musicq/`（Python 引擎）+ `tools/musicq_gui/`（Qt6 GUI）+ `testplayer/`（测试播放器）
+构成评价**音频直播播放器最终播出音质**的全参考系统（与本 App 的无参考评估互补）：
 
-- **测试音源**：批量把曲库（如 `D:\music`）加工成内嵌 chirp 导频标记的 48kHz 测试音频
+- **测试音源**：批量把曲库（如 `D:\music`）加工成内嵌 chirp 导频的 48kHz 测试音频；
+  歌头 + 每 30s 一个 leader 簇（6 chirp 紧密排列），供自动切分与歌曲识别
 - **采集**：scrcpy 抓取系统播放输出（adb shell 播放捕获通道，无需录音权限）
-- **对齐**：chirp 匹配滤波检测 → 网格匹配 → 分段撤销播放器的网络自适应伸缩（TSM）形变 → 亚采样精对齐
-- **评分**：ViSQOLAudio（全参考，音乐适用）+ 可选 PEAQ 外部二进制 + SNR/THD+N，分段打分 + 中位数/P10/P90 聚合 + 质量曲线
+- **对齐评分（autoscore 一键）**：leader 聚类切分 30s 实例 → 歌曲识别 →
+  分段撤销 TSM 时间形变 → 亚采样精对齐 → ViSQOLAudio（主）+ SNR/segSNR/THD+N
+  （最小二乘增益校正）+ 可选 PEAQ，出逐段报告与聚合统计
+- **GUI/发布**：`musicq_tool.exe` 三 Tab（音源生成/采集/评估）；发布包开箱即用
+  （内置冻结引擎 + scrcpy + ffmpeg，PC 端零安装）
 
-使用说明见 `docs/MUSICQ_USAGE.md`；算法原理与 CLI 参考见 `tools/musicq/README.md`。
+使用说明见 `docs/MUSICQ_USAGE.md`；完整设计文档见 `docs/MUSICQ_DESIGN.md`；
+算法原理与 CLI 参考见 `tools/musicq/README.md`。
