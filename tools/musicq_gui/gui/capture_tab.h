@@ -29,6 +29,8 @@ private slots:
     void onRecordFinished(int exitCode);
     void onExtractFinished(int exitCode);
     void onBtFinished(int exitCode);
+    void onSinkLine(const QString& line);
+    void resetA2dpStage();
 
 private:
     void appendLog(const QString& level, const QString& msg);
@@ -50,7 +52,9 @@ private:
 
     ProcRunner* proc_;       // scrcpy 录制进程
     ProcRunner* extractProc_;// 引擎 extract 进程
-    ProcRunner* btProc_;     // 引擎 btrecord 进程（A2DP）
+    ProcRunner* btProc_;     // 引擎 btrecord 进程（A2DP 录制）
+    ProcRunner* sinkProc_;   // 引擎 btsink 进程（A2DP sink 保持）
+    int a2dpStage_ = 0;      // A2DP 阶段: 0=未打开 1=等待连接 2=已连接 3=录制中
     QString outDir_;
     QString lastWav_;
     bool capturing_ = false;

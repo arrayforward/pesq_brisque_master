@@ -77,7 +77,9 @@ def main(argv=None) -> int:
     p.add_argument("--seconds", type=float, default=300.0, help="录制时长秒（默认 300）")
     p.add_argument("--device", default=None, help="回环输出设备名（模糊匹配，默认系统默认输出）")
     p.add_argument("--no-sink", action="store_true",
-                   help="不打开 A2DP sink（纯回环录制/已用其他方式开启 sink）")
+                   help="不打开 A2DP sink（sink 已由 btsink 进程打开/纯回环录制）")
+
+    p = sub.add_parser("btsink", help="打开 A2DP sink 并保持（JSON 行状态输出，配合两步采集）")
 
     p = sub.add_parser("align", help="chirp 检测 + 网格匹配 + 分段消形变对齐")
     p.add_argument("--ref", required=True, help="参考测试 wav（gen 产物）")
@@ -125,6 +127,10 @@ def main(argv=None) -> int:
         from . import btrecord as btrecord_mod
         btrecord_mod.btrecord(Path(args.out), seconds=args.seconds,
                               device=args.device, use_sink=not args.no_sink)
+
+    elif args.cmd == "btsink":
+        from . import btrecord as btrecord_mod
+        btrecord_mod.btsink()
 
     elif args.cmd == "align":
         align_mod.align(Path(args.ref), Path(args.markers), Path(args.deg), Path(args.out))

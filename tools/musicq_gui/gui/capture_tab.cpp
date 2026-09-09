@@ -25,7 +25,8 @@ CaptureTab::CaptureTab(QWidget* parent)
     : QWidget(parent),
       proc_(new ProcRunner(this)),
       extractProc_(new ProcRunner(this)),
-      btProc_(new ProcRunner(this)) {
+      btProc_(new ProcRunner(this)),
+      sinkProc_(new ProcRunner(this)) {
     auto* layout = new QVBoxLayout(this);
 
     // ---- 采集方式 ----
@@ -146,20 +147,74 @@ CaptureTab::CaptureTab(QWidget* parent)
         statusLabel_->setText(tr("引擎启动失败"));
         appendLog("error", m);
     });
+    // btsink 进程：JSON 状态行驱动两步流程；进程意外退出复位到未打开
+    connect(sinkProc_, &ProcRunner::line, this, &CaptureTab::onSinkLine);
+    connect(sinkProc_, &ProcRunner::finishedOk, this, [this](int code) {
+        if (methodCombo_->currentIndex() == 1 && a2dpStage_ != 3) {
+            if (code != 0)
+                appendLog("error", tr("btsink 退出 (退出码 %1)：若提示无 sink 端点，"
+                                      "说明蓝牙驱动不支持，请改用 scrcpy 方式").arg(code));
+            resetA2dpStage();
+        }
+    });
+    connect(sinkProc_, &ProcRunner::failedToStart, this, [this](const QString& m) {
+        appendLog("error", tr("btsink 启动失败: %1").arg(m));
+        resetA2dpStage();
+    });
     connect(methodCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
         const bool bt = (i == 1);
+        // 模式切换时清理 A2DP 残留进程
+        sinkProc_->stop();
+        btProc_->stop();
+        a2dpStage_ = 0;
+        capturing_ = false;
+        startBtn_->setEnabled(true);
+        stopBtn_->setEnabled(false);
+        startBtn_->setText(bt ? tr("打开蓝牙 Sink") : tr("开始采集（请先在设备上起播）"));
         btDurSpin_->setEnabled(bt);
         deviceCombo_->setEnabled(!bt);
         guideLabel_->setText(bt
-            ? tr("A2DP 流程：① 手机「设置→蓝牙」连接本电脑（本工具启动录制后 PC 才对外呈现为蓝牙音响）"
-                 "② 手机上开始播放 ③ 点「开始采集」\n"
+            ? tr("A2DP 两步流程：① 点「打开蓝牙 Sink」（PC 对外呈现为蓝牙音响，等待连接）"
+                 "② 手机「设置→蓝牙」连接本电脑，状态显示已连接后点「开始录制」\n"
                  "注意：A2DP 含蓝牙编解码损耗（通常 SBC），与 scrcpy 数字回采不是同一链路，分数不可跨通道比。")
             : tr("scrcpy 流程：adb 连接设备 → 设备上起播 →「开始采集」→ 播完点「停止并抽取」"));
+        statusLabel_->setText(tr("空闲"));
     });
     methodCombo_->setCurrentIndex(0);
     methodCombo_->currentIndexChanged(0);
 
     refreshDevices();
+}
+
+void CaptureTab::resetA2dpStage() {
+    a2dpStage_ = 0;
+    startBtn_->setEnabled(true);
+    startBtn_->setText(tr("打开蓝牙 Sink"));
+    statusLabel_->setText(tr("空闲"));
+}
+
+void CaptureTab::onSinkLine(const QString& line) {
+    if (!line.startsWith('{')) {  // 非 JSON 的普通日志行
+        appendLog("info", line);
+        return;
+    }
+    appendLog("info", line);
+    if (line.contains(QStringLiteral("\"opened\""))) {
+        if (a2dpStage_ == 1) {
+            a2dpStage_ = 2;
+            startBtn_->setEnabled(true);
+            startBtn_->setText(tr("开始录制"));
+            statusLabel_->setText(tr("手机已连接，可以开始录制"));
+        }
+    } else if (line.contains(QStringLiteral("\"closed\""))) {
+        if (a2dpStage_ == 2) {
+            a2dpStage_ = 1;
+            startBtn_->setEnabled(false);
+            statusLabel_->setText(tr("手机连接断开，等待重新连接…"));
+        }
+    } else if (line.contains(QStringLiteral("\"waiting\""))) {
+        statusLabel_->setText(tr("等待手机连接…请在手机蓝牙设置里连接本电脑"));
+    }
 }
 
 QString CaptureTab::defaultOutDir() const {
@@ -236,19 +291,34 @@ void CaptureTab::startCapture() {
     outDir_ = dir;
 
     if (methodCombo_->currentIndex() == 1) {
-        // ---- 蓝牙 A2DP：引擎 btrecord（打开 sink + 回环录制定长音频）----
+        // ---- 蓝牙 A2DP 两步：先 btsink 等手机连接，再 btrecord --no-sink 录制 ----
+        if (a2dpStage_ <= 1) {
+            // 阶段 1：打开 sink，等待手机连接
+            if (!sinkProc_->running()) {
+                a2dpStage_ = 1;
+                startBtn_->setEnabled(false);
+                stopBtn_->setEnabled(true);
+                statusLabel_->setText(tr("等待手机连接…请在手机蓝牙设置里连接本电脑"));
+                appendLog("info", tr("btsink 启动：PC 对外呈现为蓝牙音响，等待手机连接"));
+                sinkProc_->start(spec.program,
+                                 spec.prefixArgs + QStringList{"btsink"},
+                                 spec.workDir, toolEnv());
+            }
+            return;
+        }
+        // 阶段 2：手机已连接，开始录制
         const QString wav = dir + "/cap.wav";
         capturing_ = true;
+        a2dpStage_ = 3;
         startBtn_->setEnabled(false);
         stopBtn_->setEnabled(true);
-        statusLabel_->setText(tr("A2DP 录制中… 请在手机蓝牙里连接本电脑并起播"));
-        appendLog("info", tr("btrecord -> %1（%2 秒）。若提示无 A2DP sink 端点，"
-                             "说明本机蓝牙驱动不支持，请改用 scrcpy 方式。")
-                              .arg(wav).arg(btDurSpin_->value()));
+        statusLabel_->setText(tr("A2DP 录制中…（btsink 保持连接）"));
+        appendLog("info", tr("btrecord -> %1（%2 秒）").arg(wav).arg(btDurSpin_->value()));
         btProc_->start(spec.program,
                        spec.prefixArgs + QStringList{"btrecord", "-o", wav,
                                                      "--seconds",
-                                                     QString::number(btDurSpin_->value())},
+                                                     QString::number(btDurSpin_->value()),
+                                                     "--no-sink"},
                        spec.workDir, toolEnv());
         return;
     }
@@ -271,8 +341,11 @@ void CaptureTab::stopCapture() {
     if (methodCombo_->currentIndex() == 1) {
         // A2DP：定长录制，提前停止=终止（已录部分不保留，引擎为整段录制）
         btProc_->stop();
+        sinkProc_->stop();  // 同时关闭 sink
         capturing_ = false;
+        a2dpStage_ = 0;
         startBtn_->setEnabled(true);
+        startBtn_->setText(tr("打开蓝牙 Sink"));
         statusLabel_->setText(tr("已提前终止 A2DP 录制（未保存）"));
         appendLog("warn", tr("A2DP 录制被提前终止，输出未保存（如需保留请等倒计时结束）"));
         return;
@@ -305,7 +378,10 @@ void CaptureTab::onRecordFinished(int exitCode) {
 void CaptureTab::onBtFinished(int exitCode) {
     if (!capturing_) return;  // 被提前终止
     capturing_ = false;
+    sinkProc_->stop();  // 录制结束，关闭 sink
+    a2dpStage_ = 0;
     startBtn_->setEnabled(true);
+    startBtn_->setText(tr("打开蓝牙 Sink"));
     stopBtn_->setEnabled(false);
     const QString wav = outDir_ + "/cap.wav";
     if (exitCode == 0 && QFileInfo::exists(wav)) {

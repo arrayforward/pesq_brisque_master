@@ -3,12 +3,17 @@
 链路：手机蓝牙 → PC（A2DP sink, AudioPlaybackConnection）→ 渲染到输出设备
       → WASAPI loopback 录制 → 48kHz 单声道 wav（供 autoscore 打分）。
 
+两个命令配合两步交互：
+- `btsink`：打开 sink（open+start）并保持运行，JSON 行输出状态变化，直到进程被杀；
+- `btrecord`：录制回环（--no-sink 时只录不开 sink，配合 btsink 进程使用）。
+
 依赖系统/驱动的 A2DP sink 支持（Windows 10 2004+ 且蓝牙驱动发布 sink 端点）；
 不支持时打印明确指引并退出（exit 2），不影响 scrcpy 通道。
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -76,9 +81,58 @@ def _pick_loopback(device_hint: str | None):
     return loopbacks[0]
 
 
+def btsink() -> None:
+    """打开 A2DP sink 并保持运行，JSON 行输出状态变化，直到进程被杀。
+
+    状态行：{"state":"waiting"}（已监听等待手机连接）
+            {"state":"opened"}（手机已连接）/ {"state":"closed"}（断开）
+    供 GUI 两步流程（先开 sink 等连接，再 btrecord --no-sink 录制）使用。
+    """
+    from winsdk.windows.media.audio import AudioPlaybackConnection
+    from winsdk.windows.devices.enumeration import DeviceInformation
+
+    def _emit(state: str):
+        print(json.dumps({"state": state}), flush=True)
+
+    async def _run():
+        sel = AudioPlaybackConnection.get_device_selector()
+        devs = await DeviceInformation.find_all_async(sel, [])
+        if len(devs) == 0:
+            print(SINK_HELP, file=sys.stderr)
+            raise SystemExit(2)
+        apc = AudioPlaybackConnection.try_create_from_id(devs[0].id)
+        if apc is None:
+            print(SINK_HELP, file=sys.stderr)
+            raise SystemExit(2)
+
+        def on_state(sender, _args):
+            # AudioPlaybackConnectionState: 0=CLOSED 1=OPENED
+            _emit("opened" if int(sender.state) == 1 else "closed")
+
+        apc.add_state_changed(on_state)
+        await apc.open_async()
+        await apc.start_async()  # open 只建通道，start 才开始监听远端连接
+        _emit("waiting")
+        print("A2DP sink 已打开，PC 对外呈现为蓝牙音响，等待手机连接…", flush=True)
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        finally:
+            apc.close()
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
 def btrecord(out_wav: Path, seconds: float, device: str | None = None,
              use_sink: bool = True) -> Path:
-    """录制 N 秒回环音频写 48kHz 单声道 wav。use_sink 时先打开 A2DP sink。"""
+    """录制 N 秒回环音频写 48kHz 单声道 wav。
+
+    use_sink=False（--no-sink）时只录不开 sink——适用于 sink 已由其他进程
+    （如 btsink 命令）打开并保持的场景，或纯回环录制自测。
+    """
     import soundcard as sc
 
     apc = None

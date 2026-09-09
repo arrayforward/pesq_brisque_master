@@ -56,3 +56,13 @@ def test_btrecord_sink_unavailable_hint(tmp_path):
     with pytest.raises(SystemExit) as e:
         btrecord(tmp_path / "x.wav", seconds=1.0, use_sink=True)
     assert e.value.code == 2
+
+
+def test_btsink_sink_unavailable_hint():
+    """本机无 A2DP sink 端点时，btsink 应给出指引并以退出码 2 失败。"""
+    from musicq.btrecord import open_a2dp_sink, btsink
+    if open_a2dp_sink() is not None:
+        pytest.skip("本机支持 A2DP sink，无法验证失败路径")
+    with pytest.raises(SystemExit) as e:
+        btsink()
+    assert e.value.code == 2
