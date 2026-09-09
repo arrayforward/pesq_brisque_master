@@ -55,6 +55,7 @@ private:
     ProcRunner* btProc_;     // 引擎 btrecord 进程（A2DP 录制）
     ProcRunner* sinkProc_;   // 引擎 btsink 进程（A2DP sink 保持）
     int a2dpStage_ = 0;      // A2DP 阶段: 0=未打开 1=等待连接 2=已连接 3=录制中
+    bool stopRequested_ = false; // A2DP 录制中被用户提前停止（保留已录部分）
     QString outDir_;
     QString lastWav_;
     bool capturing_ = false;

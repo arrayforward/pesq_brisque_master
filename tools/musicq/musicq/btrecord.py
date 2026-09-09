@@ -128,11 +128,21 @@ def btsink() -> None:
 
 def btrecord(out_wav: Path, seconds: float, device: str | None = None,
              use_sink: bool = True) -> Path:
-    """录制 N 秒回环音频写 48kHz 单声道 wav。
+    """录制 N 秒回环音频写 48kHz 单声道 wav（分块实时写盘）。
 
     use_sink=False（--no-sink）时只录不开 sink——适用于 sink 已由其他进程
     （如 btsink 命令）打开并保持的场景，或纯回环录制自测。
+
+    健壮性设计：0.5s 小块循环读取、写一块 flush 一块（libsndfile sf_sync 会同步
+    WAV header 的 data size 并落盘），因此：
+    - 进程崩溃/断电：磁盘上保留到最后一块为止的有效 wav；
+    - 被强杀（TerminateProcess，无信号处理机会）：header 已是最后 flush 的值，
+      文件可直接读；
+    - 收到 SIGTERM/SIGINT（POSIX）：handler 置标志位优雅退出循环并正常 close。
     """
+    import signal as _signal
+    import time
+
     import soundcard as sc
 
     apc = None
@@ -146,22 +156,48 @@ def btrecord(out_wav: Path, seconds: float, device: str | None = None,
 
     mic = _pick_loopback(device)
     print(f"回环录制设备: {mic.name}，录制 {seconds:.0f}s → {out_wav}")
-    n = int(round(seconds * TARGET_SR))
+
+    n_target = int(round(seconds * TARGET_SR))
+    block = TARGET_SR // 2          # 0.5s 一块
+    written = 0
+    sumsq = 0.0
+    stop = {"flag": False}
+
+    def _on_term(_sig, _frm):
+        stop["flag"] = True
+
+    for sig in (_signal.SIGTERM, _signal.SIGINT):
+        try:
+            _signal.signal(sig, _on_term)
+        except (ValueError, OSError):
+            pass  # Windows 部分信号不可注册，忽略
+
+    t0 = time.monotonic()
     # WASAPI 回环可直接按 48kHz 工程采样率录制（A2DP 44.1k 由系统重采样）
-    data = mic.record(samplerate=TARGET_SR, numframes=n, channels=1)
-    mono = data if data.ndim == 1 else data.mean(axis=1)
-    mono = mono.astype(np.float32)
+    with sf.SoundFile(str(out_wav), "w", samplerate=TARGET_SR,
+                      channels=1, subtype="PCM_16") as f:
+        with mic.recorder(samplerate=TARGET_SR, channels=1) as rec:
+            while written < n_target and not stop["flag"]:
+                n = min(block, n_target - written)
+                data = rec.record(numframes=n)
+                if data.ndim > 1:
+                    data = data.mean(axis=1)
+                data = data.astype(np.float32)
+                f.write(data)
+                f.flush()           # 同步 header + 落盘（强杀也保留有效 wav）
+                sumsq += float(np.sum(data ** 2))
+                written += len(data)
+                if time.monotonic() - t0 > seconds + 5:  # 兜底防挂死
+                    break
 
-    peak = float(np.max(np.abs(mono))) if len(mono) else 0.0
-    if peak > 0.99:
-        mono *= 0.99 / peak
-    sf.write(str(out_wav), mono, TARGET_SR, subtype="PCM_16")
-
-    rms = float(np.sqrt(np.mean(mono ** 2))) if len(mono) else 0.0
+    dur = written / TARGET_SR
+    if stop["flag"]:
+        print(f"收到终止信号，优雅收尾：已保留 {dur:.1f}s 录音")
+    rms = float(np.sqrt(sumsq / written)) if written else 0.0
     if rms < 1e-5:
         print("[警告] 录制结果接近全静音！手机未连接/未播放，或输出设备不对。", file=sys.stderr)
     else:
-        print(f"录制完成 → {out_wav}（RMS={20 * np.log10(rms + 1e-12):.1f} dBFS）")
+        print(f"录制完成 → {out_wav}（{dur:.1f}s，RMS={20 * np.log10(rms + 1e-12):.1f} dBFS）")
 
     if apc is not None:
         apc.close()

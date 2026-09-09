@@ -3,10 +3,13 @@
 #include "engine.h"
 #include "proc_runner.h"
 
+#include <cmath>
+
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -339,15 +342,12 @@ void CaptureTab::startCapture() {
 void CaptureTab::stopCapture() {
     stopBtn_->setEnabled(false);
     if (methodCombo_->currentIndex() == 1) {
-        // A2DP：定长录制，提前停止=终止（已录部分不保留，引擎为整段录制）
+        // A2DP 提前停止 = 正常结束本次录制：引擎分块写盘+逐块 flush，
+        // 强杀后已录部分仍在盘上且 header 有效（见 btrecord.py 注释）。
+        // 终止录制进程，等 onBtFinished 对已录部分做静音校验后照常送评估。
+        stopRequested_ = true;
         btProc_->stop();
-        sinkProc_->stop();  // 同时关闭 sink
-        capturing_ = false;
-        a2dpStage_ = 0;
-        startBtn_->setEnabled(true);
-        startBtn_->setText(tr("打开蓝牙 Sink"));
-        statusLabel_->setText(tr("已提前终止 A2DP 录制（未保存）"));
-        appendLog("warn", tr("A2DP 录制被提前终止，输出未保存（如需保留请等倒计时结束）"));
+        statusLabel_->setText(tr("正在停止，保留已录部分…"));
         return;
     }
     statusLabel_->setText(tr("停止录制，等待写出…"));
@@ -375,8 +375,28 @@ void CaptureTab::onRecordFinished(int exitCode) {
                         spec.workDir, toolEnv());
 }
 
+// 读取 PCM16 wav 的 RMS（跳过前 1024 字节 header 区域，仅用于静音校验）
+static double wavRms16(const QString& path) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return 0.0;
+    f.skip(1024);
+    const QByteArray data = f.readAll();
+    const int n = data.size() / 2;
+    if (n <= 0) return 0.0;
+    const qint16* s = reinterpret_cast<const qint16*>(data.constData());
+    double sum = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double v = s[i] / 32768.0;
+        sum += v * v;
+    }
+    return std::sqrt(sum / n);
+}
+
 void CaptureTab::onBtFinished(int exitCode) {
-    if (!capturing_) return;  // 被提前终止
+    if (methodCombo_->currentIndex() != 1) return;
+    const bool early = stopRequested_;
+    stopRequested_ = false;
+    if (!capturing_) return;  // 已被模式切换清理
     capturing_ = false;
     sinkProc_->stop();  // 录制结束，关闭 sink
     a2dpStage_ = 0;
@@ -384,15 +404,30 @@ void CaptureTab::onBtFinished(int exitCode) {
     startBtn_->setText(tr("打开蓝牙 Sink"));
     stopBtn_->setEnabled(false);
     const QString wav = outDir_ + "/cap.wav";
-    if (exitCode == 0 && QFileInfo::exists(wav)) {
-        lastWav_ = wav;
+    QFileInfo fi(wav);
+    // 提前停止（被强杀）时退出码非 0 属正常——以文件是否存在且非空为准
+    if (!fi.exists() || fi.size() < 2048) {
+        statusLabel_->setText(tr("A2DP 录制失败，无有效输出 (退出码 %1)").arg(exitCode));
+        appendLog("error", tr("btrecord 退出码 %1，无有效输出文件").arg(exitCode));
+        return;
+    }
+    // 对已录部分做静音校验（引擎正常结束时会自校，提前被杀时由这里兜底）
+    const double rms = wavRms16(wav);
+    const double secs = (fi.size() - 44) / 96000.0;  // 48kHz/16bit 单声道
+    if (rms < 1e-5) {
+        statusLabel_->setText(tr("录制结果接近全静音！手机未连接/未播放"));
+        appendLog("warn", tr("录制结果接近全静音（RMS=%1），请检查手机连接与播放").arg(rms));
+        return;
+    }
+    lastWav_ = wav;
+    if (early) {
+        statusLabel_->setText(tr("已停止，保留已录 %1 秒: %2").arg(secs, 0, 'f', 0).arg(wav));
+        appendLog("info", tr("提前停止，保留已录 %1 秒 → %2").arg(secs, 0, 'f', 1).arg(wav));
+    } else {
         statusLabel_->setText(tr("完成: %1").arg(wav));
         appendLog("info", tr("A2DP 录制完成: %1").arg(wav));
-        emit captured(wav);
-    } else {
-        statusLabel_->setText(tr("A2DP 录制失败 (退出码 %1)").arg(exitCode));
-        appendLog("error", tr("btrecord 退出码 %1；若为 sink 端点缺失，请改用 scrcpy 方式").arg(exitCode));
     }
+    emit captured(wav);
 }
 
 void CaptureTab::onExtractFinished(int exitCode) {
