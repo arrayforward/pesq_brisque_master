@@ -7,6 +7,7 @@ class QComboBox;
 class QPushButton;
 class QLabel;
 class QPlainTextEdit;
+class QSpinBox;
 class QProcessEnvironment;
 class ProcRunner;
 
@@ -27,12 +28,16 @@ private slots:
     void stopCapture();
     void onRecordFinished(int exitCode);
     void onExtractFinished(int exitCode);
+    void onBtFinished(int exitCode);
 
 private:
     void appendLog(const QString& level, const QString& msg);
     QString defaultOutDir() const;
     QProcessEnvironment toolEnv() const;  // PATH 前置 scrcpy/ffmpeg 所在目录
 
+    QComboBox* methodCombo_;   // 采集方式: 0=scrcpy(USB) 1=蓝牙 A2DP
+    QSpinBox* btDurSpin_;      // A2DP 录制时长(秒)
+    QLabel* guideLabel_;       // 随方式切换的操作指引
     QLineEdit* scrcpyEdit_;
     QLineEdit* ffmpegEdit_;
     QLineEdit* adbEdit_;
@@ -45,6 +50,7 @@ private:
 
     ProcRunner* proc_;       // scrcpy 录制进程
     ProcRunner* extractProc_;// 引擎 extract 进程
+    ProcRunner* btProc_;     // 引擎 btrecord 进程（A2DP）
     QString outDir_;
     QString lastWav_;
     bool capturing_ = false;

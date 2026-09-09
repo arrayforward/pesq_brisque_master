@@ -72,6 +72,13 @@ def main(argv=None) -> int:
     p.add_argument("input", help="capture 得到的 mkv")
     p.add_argument("-o", "--out", default=None, help="输出 wav（默认同名 .wav）")
 
+    p = sub.add_parser("btrecord", help="蓝牙 A2DP 采集：PC 模拟蓝牙音响 + 回环录制")
+    p.add_argument("-o", "--out", required=True, help="输出 wav")
+    p.add_argument("--seconds", type=float, default=300.0, help="录制时长秒（默认 300）")
+    p.add_argument("--device", default=None, help="回环输出设备名（模糊匹配，默认系统默认输出）")
+    p.add_argument("--no-sink", action="store_true",
+                   help="不打开 A2DP sink（纯回环录制/已用其他方式开启 sink）")
+
     p = sub.add_parser("align", help="chirp 检测 + 网格匹配 + 分段消形变对齐")
     p.add_argument("--ref", required=True, help="参考测试 wav（gen 产物）")
     p.add_argument("--markers", required=True, help="标记时刻 json（gen 产物）")
@@ -113,6 +120,11 @@ def main(argv=None) -> int:
         inp = Path(args.input)
         out = Path(args.out) if args.out else inp.with_suffix(".wav")
         capture_mod.extract(inp, out)
+
+    elif args.cmd == "btrecord":
+        from . import btrecord as btrecord_mod
+        btrecord_mod.btrecord(Path(args.out), seconds=args.seconds,
+                              device=args.device, use_sink=not args.no_sink)
 
     elif args.cmd == "align":
         align_mod.align(Path(args.ref), Path(args.markers), Path(args.deg), Path(args.out))

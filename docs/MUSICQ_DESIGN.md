@@ -27,10 +27,13 @@
 │  testplayer.apk（或被测 App） │   播放带导频测试音频
 └──────────────▲───────────────┘
                │ adb (播放捕获通道, Android 11+)
+               │ 或 蓝牙 A2DP（PC 模拟音响，备选通道）
 ┌──────────────┴───────────────┐
 │ Windows PC                   │
 │  scrcpy --no-video --record  │──> cap.mkv ──> ffmpeg 抽取 48k 单声道 cap.wav
 │  (内置 tools/scrcpy, ffmpeg) │
+│  或 btrecord: A2DP sink +    │──> 回环录制 48k 单声道 cap.wav
+│   WASAPI loopback            │
 │                              │
 │  musicq 引擎 (Python, 冻结为  │   detect: chirp 匹配滤波检测 + leader 聚类
 │   engine/musicq-engine.exe)  │   autoscore: 30s 实例切分 + 歌曲识别
@@ -43,7 +46,19 @@
 ```
 
 数据流：`gen`（曲库 → 带导频 test.wav + markers.json）→ 设备播放 →
-`capture/extract`（scrcpy → cap.wav）→ `autoscore`（识别+对齐+评分）→ 报告。
+`capture/extract`（scrcpy → cap.wav）或 `btrecord`（蓝牙 A2DP → cap.wav）
+→ `autoscore`（识别+对齐+评分）→ 报告。
+
+### 2.1 采集通道对比
+
+| 通道 | 链路 | 特点 |
+|---|---|---|
+| scrcpy（默认） | AudioFlinger 混音 → shell 播放捕获 → flac → wav | 数字回采，无编解码损耗；需设备支持 adb 播放捕获（Android 11+） |
+| 蓝牙 A2DP（`btrecord`） | 手机蓝牙 → PC A2DP sink（AudioPlaybackConnection）→ 渲染到输出设备 → WASAPI loopback 录制 | 依赖系统/驱动的 A2DP sink 支持（Win10 2004+ 且驱动发布 sink 端点；实测 Intel Wireless Bluetooth@Win11 build 26200 可用，端点动态出现，`open_async` 后必须 `start_async` 才开始监听）；**含 SBC 编解码损耗，与 scrcpy 不是同一链路，分数不可跨通道比**；SBC 带宽 ~15kHz，chirp 频段（10-14k）可能被衰减影响检出率，必要时 `gen --f0/--f1` 降频段 |
+
+实测同一播放内容两通道对比（一加 LE2110，夜曲）：scrcpy ViSQOL 4.731 / SNR 56.9dB；
+A2DP ViSQOL 4.098 / SNR -13.2dB（SBC 波形重塑使时域 SNR 呈深负值，
+chirp 检出数不受影响：两通道均 38/38 峰，识别验证分 1.000 vs 0.38~0.42 均远超 0.3 阈值）。
 
 ## 3. chirp 与 leader 设计
 

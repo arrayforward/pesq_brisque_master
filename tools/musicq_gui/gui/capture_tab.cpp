@@ -17,14 +17,36 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QVBoxLayout>
 
 CaptureTab::CaptureTab(QWidget* parent)
     : QWidget(parent),
       proc_(new ProcRunner(this)),
-      extractProc_(new ProcRunner(this)) {
+      extractProc_(new ProcRunner(this)),
+      btProc_(new ProcRunner(this)) {
     auto* layout = new QVBoxLayout(this);
+
+    // ---- 采集方式 ----
+    auto* methodRow = new QHBoxLayout;
+    methodCombo_ = new QComboBox;
+    methodCombo_->addItem(tr("scrcpy（USB 数字回采）"));
+    methodCombo_->addItem(tr("蓝牙 A2DP（PC 模拟音响）"));
+    btDurSpin_ = new QSpinBox;
+    btDurSpin_->setRange(10, 86400);
+    btDurSpin_->setValue(300);
+    btDurSpin_->setSuffix(tr(" 秒"));
+    methodRow->addWidget(new QLabel(tr("采集方式:")));
+    methodRow->addWidget(methodCombo_, 1);
+    methodRow->addWidget(new QLabel(tr("A2DP 录制时长:")));
+    methodRow->addWidget(btDurSpin_);
+    layout->addLayout(methodRow);
+
+    guideLabel_ = new QLabel;
+    guideLabel_->setWordWrap(true);
+    guideLabel_->setStyleSheet("color:#8ab4f8;");
+    layout->addWidget(guideLabel_);
 
     // ---- 工具路径 ----
     auto* toolGroup = new QGroupBox(tr("工具路径（默认 PATH 查找，可改为完整路径）"));
@@ -112,6 +134,30 @@ CaptureTab::CaptureTab(QWidget* parent)
         statusLabel_->setText(tr("引擎启动失败"));
         appendLog("error", m);
     });
+    connect(btProc_, &ProcRunner::line, this, [this](const QString& l) {
+        appendLog(l.contains(QStringLiteral("警告")) || l.contains(QStringLiteral("错误"))
+                      ? "warn" : "info", l);
+    });
+    connect(btProc_, &ProcRunner::finishedOk, this, &CaptureTab::onBtFinished);
+    connect(btProc_, &ProcRunner::failedToStart, this, [this](const QString& m) {
+        capturing_ = false;
+        startBtn_->setEnabled(true);
+        stopBtn_->setEnabled(false);
+        statusLabel_->setText(tr("引擎启动失败"));
+        appendLog("error", m);
+    });
+    connect(methodCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
+        const bool bt = (i == 1);
+        btDurSpin_->setEnabled(bt);
+        deviceCombo_->setEnabled(!bt);
+        guideLabel_->setText(bt
+            ? tr("A2DP 流程：① 手机「设置→蓝牙」连接本电脑（本工具启动录制后 PC 才对外呈现为蓝牙音响）"
+                 "② 手机上开始播放 ③ 点「开始采集」\n"
+                 "注意：A2DP 含蓝牙编解码损耗（通常 SBC），与 scrcpy 数字回采不是同一链路，分数不可跨通道比。")
+            : tr("scrcpy 流程：adb 连接设备 → 设备上起播 →「开始采集」→ 播完点「停止并抽取」"));
+    });
+    methodCombo_->setCurrentIndex(0);
+    methodCombo_->currentIndexChanged(0);
 
     refreshDevices();
 }
@@ -174,7 +220,7 @@ void CaptureTab::refreshDevices() {
 void CaptureTab::startCapture() {
     EngineSpec spec;
     QString err;
-    if (!resolveEngine(spec, err)) {  // extract 阶段需要引擎，先检查
+    if (!resolveEngine(spec, err)) {  // extract/btrecord 阶段需要引擎，先检查
         QMessageBox::warning(this, tr("提示"), err);
         return;
     }
@@ -188,6 +234,26 @@ void CaptureTab::startCapture() {
         return;
     }
     outDir_ = dir;
+
+    if (methodCombo_->currentIndex() == 1) {
+        // ---- 蓝牙 A2DP：引擎 btrecord（打开 sink + 回环录制定长音频）----
+        const QString wav = dir + "/cap.wav";
+        capturing_ = true;
+        startBtn_->setEnabled(false);
+        stopBtn_->setEnabled(true);
+        statusLabel_->setText(tr("A2DP 录制中… 请在手机蓝牙里连接本电脑并起播"));
+        appendLog("info", tr("btrecord -> %1（%2 秒）。若提示无 A2DP sink 端点，"
+                             "说明本机蓝牙驱动不支持，请改用 scrcpy 方式。")
+                              .arg(wav).arg(btDurSpin_->value()));
+        btProc_->start(spec.program,
+                       spec.prefixArgs + QStringList{"btrecord", "-o", wav,
+                                                     "--seconds",
+                                                     QString::number(btDurSpin_->value())},
+                       spec.workDir, toolEnv());
+        return;
+    }
+
+    // ---- scrcpy ----
     QStringList args{"--no-video", "--no-control", "--audio-codec=flac",
                      QStringLiteral("--record=%1/cap.mkv").arg(dir)};
     const QString serial = deviceCombo_->currentText().trimmed();
@@ -202,6 +268,15 @@ void CaptureTab::startCapture() {
 
 void CaptureTab::stopCapture() {
     stopBtn_->setEnabled(false);
+    if (methodCombo_->currentIndex() == 1) {
+        // A2DP：定长录制，提前停止=终止（已录部分不保留，引擎为整段录制）
+        btProc_->stop();
+        capturing_ = false;
+        startBtn_->setEnabled(true);
+        statusLabel_->setText(tr("已提前终止 A2DP 录制（未保存）"));
+        appendLog("warn", tr("A2DP 录制被提前终止，输出未保存（如需保留请等倒计时结束）"));
+        return;
+    }
     statusLabel_->setText(tr("停止录制，等待写出…"));
     proc_->stop();  // scrcpy 无优雅停止通道，kill 后 ffmpeg 通常仍可读出 flac 流
 }
@@ -225,6 +300,23 @@ void CaptureTab::onRecordFinished(int exitCode) {
                         spec.prefixArgs + QStringList{"extract", outDir_ + "/cap.mkv",
                                                       "-o", wav},
                         spec.workDir, toolEnv());
+}
+
+void CaptureTab::onBtFinished(int exitCode) {
+    if (!capturing_) return;  // 被提前终止
+    capturing_ = false;
+    startBtn_->setEnabled(true);
+    stopBtn_->setEnabled(false);
+    const QString wav = outDir_ + "/cap.wav";
+    if (exitCode == 0 && QFileInfo::exists(wav)) {
+        lastWav_ = wav;
+        statusLabel_->setText(tr("完成: %1").arg(wav));
+        appendLog("info", tr("A2DP 录制完成: %1").arg(wav));
+        emit captured(wav);
+    } else {
+        statusLabel_->setText(tr("A2DP 录制失败 (退出码 %1)").arg(exitCode));
+        appendLog("error", tr("btrecord 退出码 %1；若为 sink 端点缺失，请改用 scrcpy 方式").arg(exitCode));
+    }
 }
 
 void CaptureTab::onExtractFinished(int exitCode) {

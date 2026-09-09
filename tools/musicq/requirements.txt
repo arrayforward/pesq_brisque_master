@@ -3,3 +3,5 @@ scipy
 soundfile
 matplotlib
 visqol-python
+soundcard
+winsdk; sys_platform == "win32"
