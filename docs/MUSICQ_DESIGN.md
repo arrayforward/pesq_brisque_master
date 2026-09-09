@@ -34,6 +34,8 @@
 │  (内置 tools/scrcpy, ffmpeg) │
 │  或 btrecord: A2DP sink +    │──> 回环录制 48k 单声道 cap.wav
 │   WASAPI loopback            │
+│  或 micrecord: WASAPI 输入    │──> mic/Line-in 录制 48k 单声道 cap.wav
+│   （麦克风/Line-in 声学兜底） │
 │                              │
 │  musicq 引擎 (Python, 冻结为  │   detect: chirp 匹配滤波检测 + leader 聚类
 │   engine/musicq-engine.exe)  │   autoscore: 30s 实例切分 + 歌曲识别
@@ -55,6 +57,7 @@
 |---|---|---|
 | scrcpy（默认） | AudioFlinger 混音 → shell 播放捕获 → flac → wav | 数字回采，无编解码损耗；需设备支持 adb 播放捕获（Android 11+） |
 | 蓝牙 A2DP（`btrecord`） | 手机蓝牙 → PC A2DP sink（AudioPlaybackConnection）→ 渲染到输出设备 → WASAPI loopback 录制 | 依赖系统/驱动的 A2DP sink 支持（Win10 2004+ 且驱动发布 sink 端点；实测 Intel Wireless Bluetooth@Win11 build 26200 可用，端点动态出现，`open_async` 后必须 `start_async` 才开始监听）；**含 SBC 编解码损耗，与 scrcpy 不是同一链路，分数不可跨通道比**；SBC 带宽 ~15kHz，chirp 频段（10-14k）可能被衰减影响检出率，必要时 `gen --f0/--f1` 降频段 |
+| mic/Line-in（`micrecord`） | 手机外放 → PC 麦克风（声学）；或手机耳机口 → PC Line-in（有线直连）→ WASAPI 输入设备录制 | 兜底通道；声学链路对摆放敏感（环境安静、距离角度固定）；注意 PC 端音频增强（降噪/AEC，如 Intel 智音 mic 实测会把外放音乐压至底噪量级）；Line-in 有线质量接近电气直连；分数不可跨通道比。与 btrecord 共用分块写盘（`_record_to_wav`），支持提前停止保留已录部分 |
 
 实测同一播放内容两通道对比（一加 LE2110，夜曲）：scrcpy ViSQOL 4.731 / SNR 56.9dB；
 A2DP ViSQOL 4.098 / SNR -13.2dB（SBC 波形重塑使时域 SNR 呈深负值，

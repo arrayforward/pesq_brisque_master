@@ -126,13 +126,10 @@ def btsink() -> None:
         pass
 
 
-def btrecord(out_wav: Path, seconds: float, device: str | None = None,
-             use_sink: bool = True) -> Path:
-    """录制 N 秒回环音频写 48kHz 单声道 wav（分块实时写盘）。
+def _record_to_wav(mic, out_wav: Path, seconds: float) -> Path:
+    """从 WASAPI 设备 mic 分块实时录制写 48kHz 单声道 wav（btrecord/micrecord 共用）。
 
-    use_sink=False（--no-sink）时只录不开 sink——适用于 sink 已由其他进程
-    （如 btsink 命令）打开并保持的场景，或纯回环录制自测。
-
+    seconds<=0 = 不限时长，直到进程被杀。
     健壮性设计：0.5s 小块循环读取、写一块 flush 一块（libsndfile sf_sync 会同步
     WAV header 的 data size 并落盘），因此：
     - 进程崩溃/断电：磁盘上保留到最后一块为止的有效 wav；
@@ -141,23 +138,8 @@ def btrecord(out_wav: Path, seconds: float, device: str | None = None,
     - 收到 SIGTERM/SIGINT（POSIX）：handler 置标志位优雅退出循环并正常 close。
     """
     import signal as _signal
-    import time
 
-    import soundcard as sc
-
-    apc = None
-    if use_sink:
-        apc = open_a2dp_sink()
-        if apc is None:
-            print(SINK_HELP, file=sys.stderr)
-            raise SystemExit(2)
-        print("A2DP sink 已打开，PC 对外呈现为蓝牙音响。"
-              "请在手机蓝牙设置中连接本电脑后开始播放。")
-
-    mic = _pick_loopback(device)
-    print(f"回环录制设备: {mic.name}，录制 {seconds:.0f}s → {out_wav}")
-
-    n_target = int(round(seconds * TARGET_SR))
+    n_target = int(round(seconds * TARGET_SR)) if seconds > 0 else None
     block = TARGET_SR // 2          # 0.5s 一块
     written = 0
     sumsq = 0.0
@@ -172,13 +154,13 @@ def btrecord(out_wav: Path, seconds: float, device: str | None = None,
         except (ValueError, OSError):
             pass  # Windows 部分信号不可注册，忽略
 
-    t0 = time.monotonic()
-    # WASAPI 回环可直接按 48kHz 工程采样率录制（A2DP 44.1k 由系统重采样）
     with sf.SoundFile(str(out_wav), "w", samplerate=TARGET_SR,
                       channels=1, subtype="PCM_16") as f:
         with mic.recorder(samplerate=TARGET_SR, channels=1) as rec:
-            while written < n_target and not stop["flag"]:
-                n = min(block, n_target - written)
+            while not stop["flag"]:
+                n = block if n_target is None else min(block, n_target - written)
+                if n <= 0:
+                    break
                 data = rec.record(numframes=n)
                 if data.ndim > 1:
                     data = data.mean(axis=1)
@@ -187,17 +169,37 @@ def btrecord(out_wav: Path, seconds: float, device: str | None = None,
                 f.flush()           # 同步 header + 落盘（强杀也保留有效 wav）
                 sumsq += float(np.sum(data ** 2))
                 written += len(data)
-                if time.monotonic() - t0 > seconds + 5:  # 兜底防挂死
-                    break
 
     dur = written / TARGET_SR
     if stop["flag"]:
         print(f"收到终止信号，优雅收尾：已保留 {dur:.1f}s 录音")
     rms = float(np.sqrt(sumsq / written)) if written else 0.0
     if rms < 1e-5:
-        print("[警告] 录制结果接近全静音！手机未连接/未播放，或输出设备不对。", file=sys.stderr)
+        print("[警告] 录制结果接近全静音！请检查输入源/播放是否正常。", file=sys.stderr)
     else:
         print(f"录制完成 → {out_wav}（{dur:.1f}s，RMS={20 * np.log10(rms + 1e-12):.1f} dBFS）")
+    return out_wav
+
+
+def btrecord(out_wav: Path, seconds: float, device: str | None = None,
+             use_sink: bool = True) -> Path:
+    """录制 N 秒回环音频写 48kHz 单声道 wav（分块实时写盘见 _record_to_wav）。
+
+    use_sink=False（--no-sink）时只录不开 sink——适用于 sink 已由其他进程
+    （如 btsink 命令）打开并保持的场景，或纯回环录制自测。
+    """
+    apc = None
+    if use_sink:
+        apc = open_a2dp_sink()
+        if apc is None:
+            print(SINK_HELP, file=sys.stderr)
+            raise SystemExit(2)
+        print("A2DP sink 已打开，PC 对外呈现为蓝牙音响。"
+              "请在手机蓝牙设置中连接本电脑后开始播放。")
+
+    mic = _pick_loopback(device)
+    print(f"回环录制设备: {mic.name}，录制 {seconds:.0f}s → {out_wav}")
+    _record_to_wav(mic, out_wav, seconds)
 
     if apc is not None:
         apc.close()

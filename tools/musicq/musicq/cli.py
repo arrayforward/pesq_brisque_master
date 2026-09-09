@@ -81,6 +81,13 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("btsink", help="打开 A2DP sink 并保持（JSON 行状态输出，配合两步采集）")
 
+    p = sub.add_parser("micrecord", help="mic/line-in 声学采集：WASAPI 输入设备录制")
+    p.add_argument("-o", "--out", default=None, help="输出 wav")
+    p.add_argument("--seconds", type=float, default=300.0,
+                   help="录制时长秒（默认 300；0=不限时长直到被杀）")
+    p.add_argument("--device", default=None, help="输入设备名（模糊匹配，默认系统默认输入）")
+    p.add_argument("--list", action="store_true", help="列出全部输入设备后退出")
+
     p = sub.add_parser("align", help="chirp 检测 + 网格匹配 + 分段消形变对齐")
     p.add_argument("--ref", required=True, help="参考测试 wav（gen 产物）")
     p.add_argument("--markers", required=True, help="标记时刻 json（gen 产物）")
@@ -131,6 +138,17 @@ def main(argv=None) -> int:
     elif args.cmd == "btsink":
         from . import btrecord as btrecord_mod
         btrecord_mod.btsink()
+
+    elif args.cmd == "micrecord":
+        from . import micrecord as micrecord_mod
+        if args.list:
+            for name in micrecord_mod.list_input_devices():
+                print(name)
+            return 0
+        if not args.out:
+            ap.error("micrecord 录制需要 -o 指定输出 wav")
+        micrecord_mod.micrecord(Path(args.out), seconds=args.seconds,
+                                device=args.device)
 
     elif args.cmd == "align":
         align_mod.align(Path(args.ref), Path(args.markers), Path(args.deg), Path(args.out))

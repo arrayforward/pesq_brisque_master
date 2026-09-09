@@ -28,22 +28,27 @@ private slots:
     void stopCapture();
     void onRecordFinished(int exitCode);
     void onExtractFinished(int exitCode);
-    void onBtFinished(int exitCode);
+    void onRecFinished(int exitCode);
     void onSinkLine(const QString& line);
+    void onListLine(const QString& line);
+    void onListFinished(int exitCode);
     void resetA2dpStage();
 
 private:
     void appendLog(const QString& level, const QString& msg);
     QString defaultOutDir() const;
     QProcessEnvironment toolEnv() const;  // PATH 前置 scrcpy/ffmpeg 所在目录
+    void refreshInputDevices();           // micrecord --list 填充输入设备下拉框
 
-    QComboBox* methodCombo_;   // 采集方式: 0=scrcpy(USB) 1=蓝牙 A2DP
-    QSpinBox* btDurSpin_;      // A2DP 录制时长(秒)
+    QComboBox* methodCombo_;   // 采集方式: 0=scrcpy(USB) 1=蓝牙 A2DP 2=麦克风/Line-in
+    QComboBox* inDevCombo_;    // mic/Line-in 输入设备（仅方式 2）
+    QWidget* inDevWidget_;     // 输入设备行容器（方式 2 时可见）
+    QSpinBox* btDurSpin_;      // A2DP/mic 录制时长(秒)，0=不限时长
     QLabel* guideLabel_;       // 随方式切换的操作指引
     QLineEdit* scrcpyEdit_;
     QLineEdit* ffmpegEdit_;
     QLineEdit* adbEdit_;
-    QComboBox* deviceCombo_;
+    QComboBox* deviceCombo_;   // adb 设备（仅方式 0）
     QLineEdit* outEdit_;
     QPushButton* startBtn_;
     QPushButton* stopBtn_;
@@ -52,10 +57,11 @@ private:
 
     ProcRunner* proc_;       // scrcpy 录制进程
     ProcRunner* extractProc_;// 引擎 extract 进程
-    ProcRunner* btProc_;     // 引擎 btrecord 进程（A2DP 录制）
+    ProcRunner* btProc_;     // 引擎 btrecord/micrecord 进程（A2DP/mic 录制）
     ProcRunner* sinkProc_;   // 引擎 btsink 进程（A2DP sink 保持）
+    ProcRunner* listProc_;   // 引擎 micrecord --list 进程
     int a2dpStage_ = 0;      // A2DP 阶段: 0=未打开 1=等待连接 2=已连接 3=录制中
-    bool stopRequested_ = false; // A2DP 录制中被用户提前停止（保留已录部分）
+    bool stopRequested_ = false; // A2DP/mic 录制中被用户提前停止（保留已录部分）
     QString outDir_;
     QString lastWav_;
     bool capturing_ = false;

@@ -29,7 +29,8 @@ CaptureTab::CaptureTab(QWidget* parent)
       proc_(new ProcRunner(this)),
       extractProc_(new ProcRunner(this)),
       btProc_(new ProcRunner(this)),
-      sinkProc_(new ProcRunner(this)) {
+      sinkProc_(new ProcRunner(this)),
+      listProc_(new ProcRunner(this)) {
     auto* layout = new QVBoxLayout(this);
 
     // ---- 采集方式 ----
@@ -37,13 +38,15 @@ CaptureTab::CaptureTab(QWidget* parent)
     methodCombo_ = new QComboBox;
     methodCombo_->addItem(tr("scrcpy（USB 数字回采）"));
     methodCombo_->addItem(tr("蓝牙 A2DP（PC 模拟音响）"));
+    methodCombo_->addItem(tr("麦克风 / Line-in（声学采集）"));
     btDurSpin_ = new QSpinBox;
-    btDurSpin_->setRange(10, 86400);
+    btDurSpin_->setRange(0, 86400);
     btDurSpin_->setValue(300);
+    btDurSpin_->setSpecialValueText(tr("不限"));
     btDurSpin_->setSuffix(tr(" 秒"));
     methodRow->addWidget(new QLabel(tr("采集方式:")));
     methodRow->addWidget(methodCombo_, 1);
-    methodRow->addWidget(new QLabel(tr("A2DP 录制时长:")));
+    methodRow->addWidget(new QLabel(tr("录制时长:")));
     methodRow->addWidget(btDurSpin_);
     layout->addLayout(methodRow);
 
@@ -51,6 +54,20 @@ CaptureTab::CaptureTab(QWidget* parent)
     guideLabel_->setWordWrap(true);
     guideLabel_->setStyleSheet("color:#8ab4f8;");
     layout->addWidget(guideLabel_);
+
+    // ---- 输入设备（仅 mic/Line-in 模式可见）----
+    inDevWidget_ = new QWidget;
+    auto* inDevRow = new QHBoxLayout(inDevWidget_);
+    inDevRow->setContentsMargins(0, 0, 0, 0);
+    inDevCombo_ = new QComboBox;
+    inDevCombo_->setEditable(true);
+    auto* inRefreshBtn = new QPushButton(tr("刷新"));
+    inDevRow->addWidget(new QLabel(tr("输入设备:")));
+    inDevRow->addWidget(inDevCombo_, 1);
+    inDevRow->addWidget(inRefreshBtn);
+    inDevWidget_->setVisible(false);
+    layout->addWidget(inDevWidget_);
+    connect(inRefreshBtn, &QPushButton::clicked, this, &CaptureTab::refreshInputDevices);
 
     // ---- 工具路径 ----
     auto* toolGroup = new QGroupBox(tr("工具路径（默认 PATH 查找，可改为完整路径）"));
@@ -142,14 +159,17 @@ CaptureTab::CaptureTab(QWidget* parent)
         appendLog(l.contains(QStringLiteral("警告")) || l.contains(QStringLiteral("错误"))
                       ? "warn" : "info", l);
     });
-    connect(btProc_, &ProcRunner::finishedOk, this, &CaptureTab::onBtFinished);
+    connect(btProc_, &ProcRunner::finishedOk, this, &CaptureTab::onRecFinished);
     connect(btProc_, &ProcRunner::failedToStart, this, [this](const QString& m) {
         capturing_ = false;
+        stopRequested_ = false;
         startBtn_->setEnabled(true);
         stopBtn_->setEnabled(false);
         statusLabel_->setText(tr("引擎启动失败"));
         appendLog("error", m);
     });
+    connect(listProc_, &ProcRunner::line, this, &CaptureTab::onListLine);
+    connect(listProc_, &ProcRunner::finishedOk, this, &CaptureTab::onListFinished);
     // btsink 进程：JSON 状态行驱动两步流程；进程意外退出复位到未打开
     connect(sinkProc_, &ProcRunner::line, this, &CaptureTab::onSinkLine);
     connect(sinkProc_, &ProcRunner::finishedOk, this, [this](int code) {
@@ -165,22 +185,35 @@ CaptureTab::CaptureTab(QWidget* parent)
         resetA2dpStage();
     });
     connect(methodCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
-        const bool bt = (i == 1);
-        // 模式切换时清理 A2DP 残留进程
+        // 模式切换时清理残留进程
         sinkProc_->stop();
         btProc_->stop();
         a2dpStage_ = 0;
+        stopRequested_ = false;
         capturing_ = false;
         startBtn_->setEnabled(true);
         stopBtn_->setEnabled(false);
-        startBtn_->setText(bt ? tr("打开蓝牙 Sink") : tr("开始采集（请先在设备上起播）"));
-        btDurSpin_->setEnabled(bt);
-        deviceCombo_->setEnabled(!bt);
-        guideLabel_->setText(bt
-            ? tr("A2DP 两步流程：① 点「打开蓝牙 Sink」（PC 对外呈现为蓝牙音响，等待连接）"
-                 "② 手机「设置→蓝牙」连接本电脑，状态显示已连接后点「开始录制」\n"
-                 "注意：A2DP 含蓝牙编解码损耗（通常 SBC），与 scrcpy 数字回采不是同一链路，分数不可跨通道比。")
-            : tr("scrcpy 流程：adb 连接设备 → 设备上起播 →「开始采集」→ 播完点「停止并抽取」"));
+        deviceCombo_->setEnabled(i == 0);
+        btDurSpin_->setEnabled(i != 0);
+        inDevWidget_->setVisible(i == 2);
+        if (i == 1) {
+            startBtn_->setText(tr("打开蓝牙 Sink"));
+            guideLabel_->setText(
+                tr("A2DP 两步流程：① 点「打开蓝牙 Sink」（PC 对外呈现为蓝牙音响，等待连接）"
+                   "② 手机「设置→蓝牙」连接本电脑，状态显示已连接后点「开始录制」\n"
+                   "注意：A2DP 含蓝牙编解码损耗（通常 SBC），与 scrcpy 数字回采不是同一链路，分数不可跨通道比。"));
+        } else if (i == 2) {
+            startBtn_->setText(tr("开始采集"));
+            guideLabel_->setText(
+                tr("声学采集：手机外放对准 PC 麦克风（环境安静、距离角度固定保证可重复性）；"
+                   "或有线直连：手机耳机口 → PC Line-in。\n"
+                   "声学/有线链路与数字通道不是同一口径，分数不可跨通道比。"));
+            refreshInputDevices();
+        } else {
+            startBtn_->setText(tr("开始采集（请先在设备上起播）"));
+            guideLabel_->setText(
+                tr("scrcpy 流程：adb 连接设备 → 设备上起播 →「开始采集」→ 播完点「停止并抽取」"));
+        }
         statusLabel_->setText(tr("空闲"));
     });
     methodCombo_->setCurrentIndex(0);
@@ -194,6 +227,39 @@ void CaptureTab::resetA2dpStage() {
     startBtn_->setEnabled(true);
     startBtn_->setText(tr("打开蓝牙 Sink"));
     statusLabel_->setText(tr("空闲"));
+}
+
+void CaptureTab::refreshInputDevices() {
+    EngineSpec spec;
+    QString err;
+    if (!resolveEngine(spec, err)) {
+        appendLog("error", err);
+        return;
+    }
+    inDevCombo_->clear();
+    inDevCombo_->addItem(tr("（枚举中…）"));
+    listProc_->start(spec.program, spec.prefixArgs + QStringList{"micrecord", "--list"},
+                     spec.workDir, toolEnv());
+}
+
+void CaptureTab::onListLine(const QString& line) {
+    // micrecord --list 每行一个输入设备名
+    if (line.isEmpty() || line.contains(QStringLiteral("警告"))
+        || line.contains(QStringLiteral("错误")))
+        return;
+    if (inDevCombo_->count() && inDevCombo_->itemText(0).contains(QStringLiteral("枚举中")))
+        inDevCombo_->clear();
+    inDevCombo_->addItem(line);
+}
+
+void CaptureTab::onListFinished(int exitCode) {
+    if (inDevCombo_->count() == 1
+        && inDevCombo_->itemText(0).contains(QStringLiteral("枚举中")))
+        inDevCombo_->clear();
+    if (inDevCombo_->count() == 0)
+        appendLog("warn", tr("输入设备枚举为空 (退出码 %1)：无可用麦克风/Line-in").arg(exitCode));
+    else
+        appendLog("info", tr("发现 %1 个输入设备").arg(inDevCombo_->count()));
 }
 
 void CaptureTab::onSinkLine(const QString& line) {
@@ -326,6 +392,24 @@ void CaptureTab::startCapture() {
         return;
     }
 
+    if (methodCombo_->currentIndex() == 2) {
+        // ---- mic/Line-in：引擎 micrecord（输入设备录制，分块写盘可提前停止）----
+        const QString wav = dir + "/cap.wav";
+        QStringList args = spec.prefixArgs + QStringList{"micrecord", "-o", wav,
+                                                         "--seconds",
+                                                         QString::number(btDurSpin_->value())};
+        const QString dev = inDevCombo_->currentText().trimmed();
+        if (!dev.isEmpty()) args += {"--device", dev};
+        capturing_ = true;
+        stopRequested_ = false;
+        startBtn_->setEnabled(false);
+        stopBtn_->setEnabled(true);
+        statusLabel_->setText(tr("声学录制中…（提前停止会保留已录部分）"));
+        appendLog("info", tr("micrecord -> %1（设备: %2）").arg(wav, dev.isEmpty() ? tr("默认") : dev));
+        btProc_->start(spec.program, args, spec.workDir, toolEnv());
+        return;
+    }
+
     // ---- scrcpy ----
     QStringList args{"--no-video", "--no-control", "--audio-codec=flac",
                      QStringLiteral("--record=%1/cap.mkv").arg(dir)};
@@ -341,10 +425,11 @@ void CaptureTab::startCapture() {
 
 void CaptureTab::stopCapture() {
     stopBtn_->setEnabled(false);
-    if (methodCombo_->currentIndex() == 1) {
-        // A2DP 提前停止 = 正常结束本次录制：引擎分块写盘+逐块 flush，
+    const int mode = methodCombo_->currentIndex();
+    if (mode == 1 || mode == 2) {
+        // A2DP/mic 提前停止 = 正常结束本次录制：引擎分块写盘+逐块 flush，
         // 强杀后已录部分仍在盘上且 header 有效（见 btrecord.py 注释）。
-        // 终止录制进程，等 onBtFinished 对已录部分做静音校验后照常送评估。
+        // 终止录制进程，等 onRecFinished 对已录部分做静音校验后照常送评估。
         stopRequested_ = true;
         btProc_->stop();
         statusLabel_->setText(tr("正在停止，保留已录部分…"));
@@ -392,16 +477,19 @@ static double wavRms16(const QString& path) {
     return std::sqrt(sum / n);
 }
 
-void CaptureTab::onBtFinished(int exitCode) {
-    if (methodCombo_->currentIndex() != 1) return;
+void CaptureTab::onRecFinished(int exitCode) {
+    const int mode = methodCombo_->currentIndex();
+    if (mode != 1 && mode != 2) return;
     const bool early = stopRequested_;
     stopRequested_ = false;
     if (!capturing_) return;  // 已被模式切换清理
     capturing_ = false;
-    sinkProc_->stop();  // 录制结束，关闭 sink
-    a2dpStage_ = 0;
+    if (mode == 1) {
+        sinkProc_->stop();  // A2DP：录制结束，关闭 sink
+        a2dpStage_ = 0;
+        startBtn_->setText(tr("打开蓝牙 Sink"));
+    }
     startBtn_->setEnabled(true);
-    startBtn_->setText(tr("打开蓝牙 Sink"));
     stopBtn_->setEnabled(false);
     const QString wav = outDir_ + "/cap.wav";
     QFileInfo fi(wav);
