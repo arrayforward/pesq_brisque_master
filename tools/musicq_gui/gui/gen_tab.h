@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class QLineEdit;
+class QComboBox;
 class QPushButton;
 class QLabel;
 class QPlainTextEdit;
@@ -24,6 +25,7 @@ private:
 
     QLineEdit* srcEdit_;
     QLineEdit* outEdit_;
+    QComboBox* profileCombo_;  // chirp 预设: standard(默认)/acoustic
     QPushButton* startBtn_;
     QLabel* statusLabel_;
     QPlainTextEdit* log_;

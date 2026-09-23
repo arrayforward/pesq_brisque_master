@@ -160,6 +160,11 @@ testplayer 两首歌的参考文件在生成输出目录，如 `D:\music\musicq_
 
 测试音频生成参数（GUI「音源生成」Tab / CLI `gen`）：
 
+**预设（profile）**：GUI「音源生成」Tab 的"预设"下拉框与 CLI `--profile` 等价——
+`standard`（默认，数字通道 scrcpy/蓝牙A2DP：10-14kHz/60ms/-24dBFS）或
+`acoustic`（声学通道 麦克风/Line-in：3-7kHz/150ms/-16dBFS，声学链路检出率更高）。
+显式参数（下表）可覆盖预设默认值。
+
 | 参数 | 默认 | 什么时候调 |
 |---|---|---|
 | 频段 `--f0/--f1` | 10~14 kHz | 链路低通点低（低码率编码、蓝牙）时降到 8~12k 或 6~9k，避开音乐主能量区 |

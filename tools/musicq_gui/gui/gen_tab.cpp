@@ -3,6 +3,7 @@
 #include "engine.h"
 #include "proc_runner.h"
 
+#include <QComboBox>
 #include <QDateTime>
 #include <QFileDialog>
 #include <QGroupBox>
@@ -35,6 +36,16 @@ GenTab::GenTab(QWidget* parent) : QWidget(parent), proc_(new ProcRunner(this)) {
     outRow->addWidget(outEdit_, 1);
     outRow->addWidget(outBtn);
     form->addLayout(outRow);
+
+    auto* profRow = new QHBoxLayout;
+    profileCombo_ = new QComboBox;
+    profileCombo_->addItem(tr("standard（数字通道：scrcpy/蓝牙A2DP）"), "standard");
+    profileCombo_->addItem(tr("acoustic（声学通道：麦克风/Line-in）"), "acoustic");
+    profileCombo_->setCurrentIndex(0);
+    profRow->addWidget(new QLabel(tr("预设:")));
+    profRow->addWidget(profileCombo_, 1);
+    profRow->addStretch();
+    form->addLayout(profRow);
     layout->addWidget(group);
 
     startBtn_ = new QPushButton(tr("开始生成"));
@@ -100,9 +111,11 @@ void GenTab::startGen() {
     }
     startBtn_->setEnabled(false);
     statusLabel_->setText(tr("生成中…"));
+    const QString profile = profileCombo_->currentData().toString();
     appendLog("info", tr("引擎: %1").arg(spec.describe));
-    appendLog("info", tr("gen %1 -> %2").arg(src, out));
+    appendLog("info", tr("gen --profile %1 %2 -> %3").arg(profile, src, out));
     proc_->start(spec.program,
-                 spec.prefixArgs + QStringList{"gen", src, "-o", out},
+                 spec.prefixArgs + QStringList{"gen", src, "-o", out,
+                                               "--profile", profile},
                  spec.workDir);
 }
