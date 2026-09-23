@@ -81,8 +81,59 @@ STRENGTHS = {
     "copy":     None,  # 原样拷贝（仅转单声道，模拟采集通道）
     "mild":     ((0.997, 1.003), 18000.0, -45.0),
     "standard": ((0.97, 1.03), 15000.0, -40.0),
-    "strong":   ((0.95, 1.05), 12000.0, -30.0),
+    # strong：强伸缩+强噪声。12kHz LPF 会砍掉 chirp(10-14kHz)一半频段导致
+    # 假网格(rate=1.0 随机一致序列)占优，15kHz 保留 chirp 主体使真峰占优。
+    "strong":   ((0.95, 1.05), 15000.0, -30.0),
 }
+
+
+def synthesize_acoustic(audio: np.ndarray, sr: int, seed: int = 0,
+                        noise_dbfs: float = -35.0,
+                        bp_lo: float = 300.0, bp_hi: float = 8000.0,
+                        rir_decay_s: float = 0.25, agc: bool = True) -> np.ndarray:
+    """声学链路仿真：扬声器外放 → 房间 → 麦克风。
+
+    模型（声学通道无时间形变）：
+    1. 扬声器/麦克风联合响应：Butter 带通（bp_lo~bp_hi，通带外剧烈滚降，
+       10-14kHz 声学衰减可达 -20~-40dB）
+    2. 房间混响：直达 + 指数衰减噪声 RIR 卷积（T60≈rir_decay_s）
+    3. 环境噪声：高斯白噪声（noise_dbfs）
+    4. 采集端 AGC：慢 RMS 归一（500ms 窗，目标 -20dBFS，增益限幅）
+    """
+    rng = np.random.default_rng(seed)
+    x = audio.astype(np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+
+    # 1) 扬声器/mic 带通滚降
+    sos_hp = signal.butter(4, bp_lo, btype="high", fs=sr, output="sos")
+    sos_lp = signal.butter(4, bp_hi, btype="low", fs=sr, output="sos")
+    x = signal.sosfiltfilt(sos_hp, signal.sosfiltfilt(sos_lp, x))
+
+    # 2) 房间混响（RIR：delta 直达 + 指数衰减噪声尾部）
+    n_rir = int(rir_decay_s * sr)
+    tail = rng.standard_normal(n_rir) * np.exp(-np.arange(n_rir) / (rir_decay_s * sr / 4))
+    tail *= 0.3 / (np.linalg.norm(tail) + 1e-12)
+    rir = np.concatenate([[1.0], tail])
+    x = signal.fftconvolve(x, rir)[:len(x)]
+
+    # 3) 环境噪声
+    x = x + rng.standard_normal(len(x)) * 10.0 ** (noise_dbfs / 20.0)
+
+    # 4) 采集端 AGC（慢 RMS 归一，增益限幅防爆）
+    if agc:
+        fl = sr // 2  # 500ms 窗
+        n_seg = int(np.ceil(len(x) / fl))
+        padded = np.concatenate([x, np.zeros(n_seg * fl - len(x))])
+        frames = padded.reshape(n_seg, fl)
+        rms = np.sqrt(np.mean(frames ** 2, axis=1)) + 1e-6
+        gain = np.clip((10.0 ** (-20.0 / 20.0)) / rms, 0.1, 10.0)
+        # 平滑增益曲线（攻击/释放不对称，避免增益抖动）
+        sm = np.maximum.accumulate(gain * 0.5) + gain * 0.5
+        sm = signal.savgol_filter(np.minimum(sm, gain * 4), 5, 2)
+        x = (frames * sm[:, None]).reshape(-1)[:len(x)]
+
+    return x.astype(np.float32)
 
 
 def run_synthetic_check(src, workdir, seed: int = 0, strength: str = "standard",

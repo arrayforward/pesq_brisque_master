@@ -20,19 +20,35 @@ from . import simulate as simulate_mod
 DEFAULT_MUSIC_DIR = r"D:\music"
 
 
+CHIRP_PROFILES = {
+    # standard: 数字通道（scrcpy/A2DP）适用，避开音乐主能量区且在编码器通带内
+    "standard": dict(f0=10000.0, f1=14000.0, dur_ms=60.0, level_dbfs=-24.0),
+    # acoustic: 声学通道（扬声器→房间→麦克风）适用——更低频段（落在扬声器/mic
+    # 有效响应内，避开 8kHz 以上剧烈声学滚降）、更长 chirp（更高处理增益）、
+    # 更高电平（对抗环境噪声与 AGC 压制）。仿真扫描实测检出率与假峰最少。
+    "acoustic": dict(f0=3000.0, f1=7000.0, dur_ms=150.0, level_dbfs=-16.0),
+}
+
+
 def _add_chirp_opts(p: argparse.ArgumentParser):
-    p.add_argument("--f0", type=float, default=10000.0, help="chirp 起始频率 Hz")
-    p.add_argument("--f1", type=float, default=14000.0, help="chirp 终止频率 Hz")
-    p.add_argument("--dur-ms", type=float, default=60.0, help="chirp 时长 ms")
-    p.add_argument("--level", type=float, default=-24.0, help="chirp 峰值电平 dBFS")
+    p.add_argument("--profile", choices=list(CHIRP_PROFILES), default="standard",
+                   help="chirp 预设：standard=10-14k/60ms/-24dB（数字通道），"
+                        "acoustic=3-7k/150ms/-16dB（声学通道优化）")
+    p.add_argument("--f0", type=float, default=None, help="chirp 起始频率 Hz（覆盖预设）")
+    p.add_argument("--f1", type=float, default=None, help="chirp 终止频率 Hz（覆盖预设）")
+    p.add_argument("--dur-ms", type=float, default=None, help="chirp 时长 ms（覆盖预设）")
+    p.add_argument("--level", type=float, default=None, help="chirp 峰值电平 dBFS（覆盖预设）")
     p.add_argument("--interval", type=float, default=5.0, help="标记间隔 s")
     p.add_argument("--start", type=float, default=2.0, help="首个标记时刻 s")
 
 
 def _cfg_from(args) -> ChirpConfig:
-    return ChirpConfig(f0=args.f0, f1=args.f1, dur_ms=args.dur_ms,
-                       level_dbfs=args.level, interval_s=args.interval,
-                       start_s=args.start)
+    prof = CHIRP_PROFILES[getattr(args, "profile", "standard")]
+    return ChirpConfig(f0=args.f0 if args.f0 is not None else prof["f0"],
+                       f1=args.f1 if args.f1 is not None else prof["f1"],
+                       dur_ms=args.dur_ms if args.dur_ms is not None else prof["dur_ms"],
+                       level_dbfs=args.level if args.level is not None else prof["level_dbfs"],
+                       interval_s=args.interval, start_s=args.start)
 
 
 def _add_leader_opts(p: argparse.ArgumentParser):

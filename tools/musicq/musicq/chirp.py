@@ -85,12 +85,16 @@ def _bandpass(x: np.ndarray, sr: int, cfg: ChirpConfig) -> np.ndarray:
 
 
 def detect_chirps(x: np.ndarray, sr: int, cfg: ChirpConfig, up: bool,
-                  mad_k: float = 6.0, min_height: float = 0.25,
+                  mad_k: float = 3.5, min_height: float = 0.12,
+                  top_n_per_window: int = 5,
                   _bandpassed: bool = False) -> np.ndarray:
     """在单声道信号 x 中检测指定方向的 chirp，返回起点时刻数组（秒）。
 
-    阈值 = max(中位数 + mad_k·MAD, min_height)：MAD 自适应跟踪音乐背景，
-    min_height 兜底（实测音乐虚警上限 ~0.2，劣化 chirp 真峰 ≥0.34）。
+    阈值 = max(中位数 + mad_k·MAD, min_height)：MAD 自适应跟踪背景。
+    阈值刻意偏低（漏检远比假峰危害大），假峰由 top_n_per_window 预筛选
+    （每个标记间隔窗口保留相关值最高的 N 个，50% 重叠滑窗防边界切割）+
+    下游网格匹配剔除——强噪/声学链路下这是检出率的关键
+    （实测 -30dB 噪声下 0.25 下限会全军覆没，而假峰海可用结构先验清理）。
     """
     if not _bandpassed:
         x = _bandpass(x.astype(np.float64), sr, cfg)
@@ -100,8 +104,20 @@ def detect_chirps(x: np.ndarray, sr: int, cfg: ChirpConfig, up: bool,
     mad = np.median(np.abs(corr - med)) * 1.4826
     thr = max(med + mad_k * mad, min_height)
     # 最小间距只需避免同一 chirp 的重复峰；leader 簇内间隔 150ms 必须能分开
-    peaks, _ = signal.find_peaks(corr, height=thr,
-                                 distance=max(int(1.5 * cfg.dur_ms / 1000 * sr), 1))
+    peaks, props = signal.find_peaks(corr, height=thr,
+                                     distance=max(int(1.5 * cfg.dur_ms / 1000 * sr), 1))
+    if top_n_per_window and len(peaks) > top_n_per_window:
+        heights = props["peak_heights"]
+        win = int(cfg.interval_s * sr)
+        keep = np.zeros(len(peaks), dtype=bool)
+        # 50% 重叠滑窗，每窗保留 top_n 个最高相关峰
+        for s0 in range(0, max(len(x) - win // 2, 1), win // 2):
+            s1 = s0 + win
+            idx = np.where((peaks >= s0) & (peaks < s1))[0]
+            if len(idx) > top_n_per_window:
+                idx = idx[np.argsort(heights[idx])[-top_n_per_window:]]
+            keep[idx] = True
+        peaks = peaks[keep]
     return peaks / sr
 
 
@@ -128,6 +144,54 @@ def make_leader(sr: int, cfg: ChirpConfig, lcfg: LeaderConfig | None = None) -> 
     return out
 
 
+def detect_leaders(x: np.ndarray, sr: int, cfg: ChirpConfig,
+                   lcfg: LeaderConfig | None = None,
+                   mad_k: float = 3.5, min_height: float = 0.12) -> np.ndarray:
+    """簇级匹配滤波检测 leader，返回各簇首 chirp 起点时刻数组（秒）。
+
+    把整个 leader 簇（~0.8s）当一个大模板做归一化匹配滤波——比逐 chirp 检测
+    多约 8dB 处理增益，强噪/声学链路下显著更稳（实测 -30dB 环境噪声 + 混响下
+    单 chirp 聚类方案 25% 检出，簇级方案 100% 检出）。
+    """
+    lcfg = lcfg or LeaderConfig()
+    xb = _bandpass(x.astype(np.float64), sr, cfg)
+    tmpl = make_leader(sr, cfg, lcfg).astype(np.float64)
+    corr = _matched_filter_norm(xb, tmpl)
+    med = np.median(corr)
+    mad = np.median(np.abs(corr - med)) * 1.4826
+    thr = max(med + mad_k * mad, min_height)
+    # 同簇不重复：最小间距取 leader 间隔的一半（无周期 leader 时退化为 2s）
+    dist = int(0.5 * lcfg.interval_s * sr) if lcfg.interval_s > 0 else int(2 * sr)
+    peaks, _ = signal.find_peaks(corr, height=thr, distance=max(dist, 1))
+    return peaks / sr
+
+
+def _filter_periodic_leaders(times: np.ndarray, interval_s: float) -> np.ndarray:
+    """利用 v3 周期 leader 的等间隔先验剔除孤立假 leader。
+
+    实测数字/声学链路下，个别音乐片段与簇模板的相关（~0.17-0.34）会高于
+    叠在音乐上的真 leader（~0.05），单靠阈值无法区分；但真 leader 满足
+    t mod interval_s 同余（漏检也满足，缺一个不影响），假 leader 随机散布。
+    按 t mod interval_s 循环距离聚类（容差 max(1s, 5%×较大时刻) 容忍伸缩
+    漂移），保留最大的同余组；不足 2 个成组或 interval_s<=0 时原样返回。
+    """
+    times = np.sort(np.asarray(times, dtype=float))
+    if interval_s <= 0 or len(times) <= 2:
+        return times
+
+    def cyclic_close(a: float, b: float) -> bool:
+        d = abs(a - b) % interval_s
+        d = min(d, interval_s - d)
+        return d <= max(1.0, 0.05 * max(a, b))
+
+    best: list[float] = []
+    for t0 in times:
+        group = [t for t in times if cyclic_close(t, t0)]
+        if len(group) > len(best):
+            best = group
+    return np.array(best) if len(best) >= 2 else times
+
+
 def find_leader_clusters(det_peaks: list[tuple[float, str]], cfg: ChirpConfig,
                          lcfg: LeaderConfig | None = None,
                          max_gap_s: float = 1.0) -> list[tuple[float, float]]:
@@ -152,11 +216,18 @@ def find_leader_clusters(det_peaks: list[tuple[float, str]], cfg: ChirpConfig,
     return [(c[0][0], c[-1][0] + chirp_dur) for c in clusters if len(c) >= min_n]
 
 
-def strip_leader_clusters(det_peaks: list[tuple[float, str]], cfg: ChirpConfig,
+def strip_leader_clusters(det_peaks: list[tuple[float, str]], x: np.ndarray,
+                          sr: int, cfg: ChirpConfig,
                           lcfg: LeaderConfig | None = None) -> list[tuple[float, str]]:
-    """剔除属于 leader 簇的检测峰（网格匹配只应看到正文标记）。"""
-    leaders = find_leader_clusters(det_peaks, cfg, lcfg)
-    if not leaders:
+    """剔除 leader 簇附近的检测峰（网格匹配只应看到正文标记）。
+
+    用簇级匹配滤波（detect_leaders）定位 leader，剔除其窗口内的峰；
+    比基于单 chirp 聚类的旧实现抗噪得多（假峰海不会把簇结构淹没）。
+    """
+    lcfg = lcfg or LeaderConfig()
+    leaders = detect_leaders(x, sr, cfg, lcfg)
+    if len(leaders) == 0:
         return det_peaks
+    span = (lcfg.n_chirps - 1) * lcfg.gap_ms / 1000.0 + cfg.dur_ms / 1000.0
     return [(t, d) for t, d in det_peaks
-            if not any(ls - 0.1 <= t <= le + 0.1 for ls, le in leaders)]
+            if not any(ls - 0.1 <= t <= ls + span + 0.1 for ls in leaders)]

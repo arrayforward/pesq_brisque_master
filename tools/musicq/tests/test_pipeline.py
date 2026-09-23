@@ -111,9 +111,9 @@ def _make_ref_song(src: Path, ref_dir: Path, name: str, sr: int = 48000):
 
 @pytest.fixture(scope="module")
 def autoscore_result(tmp_path_factory):
-    """合成长录音：歌曲A×1 + 歌曲B×2（45s 各含 2 个周期 leader，共 6 段）→ autoscore。
+    """合成长录音：歌曲A×1 + 歌曲B×2（各带随机延迟/伸缩/噪声拼接）→ autoscore。
 
-    每段独立随机延迟/伸缩/噪声。周期 leader 把每个 45s 实例再切成 2 个 ~30s 段。
+    新架构：全局网格段发现（不依赖 leader 检测），按连续标记段切实例。
     """
     from musicq.autoscore import autoscore
 
@@ -126,125 +126,110 @@ def autoscore_result(tmp_path_factory):
 
     sr = 48000
     rng = np.random.default_rng(11)
-    rec_pieces = [np.zeros(int(0.3 * sr), np.float32)]  # 开头无前导 leader 的碎片
+    rec_pieces = [np.zeros(int(0.3 * sr), np.float32)]  # 开头无内容的碎片
     occs = []          # 每次播放（歌曲实例）的真值信息
     inst_starts = [0.3]
     for k, meta in enumerate((meta_a, meta_b, meta_b)):  # A×1 + B×2
         audio, _ = sf.read(str(ref_dir / f"{meta['song_id']}_test.wav"),
                            always_2d=True)
         mt = [m["time_s"] for m in meta["markers"]]
-        leader_ts = [l["start_s"] for l in meta["leader"]["leaders"]]
         truth = synthesize_degradation(audio.astype(np.float32), sr, mt,
                                        seed=100 + k, n_stretch=(2, 2),
                                        delay_s=float(rng.uniform(0.05, 0.4)),
-                                       extra_times=leader_ts,
                                        **AS_DEGRADE)
         rec_pieces.append(truth["deg"].mean(axis=1))
         rec_pieces.append(np.zeros(int(1.2 * sr), np.float32))  # 实例间隔静音
-        # 各周期 leader 在录音中的真值位置（切点真值）
-        cut_trues = [inst_starts[-1] + truth["true_extra_times"][lt]
-                     for lt in leader_ts]
         occs.append({"song_id": meta["song_id"], "meta": meta, "truth": truth,
-                     "cut_trues": cut_trues})
+                     "inst_start": inst_starts[-1]})
         inst_starts.append(inst_starts[-1] + len(truth["deg"]) / sr + 1.2)
     rec = np.concatenate(rec_pieces)
     rec_wav = base / "rec.wav"
     sf.write(str(rec_wav), rec, sr, subtype="PCM_16")
 
-    # 参照分：对实例1（songB 第一次）的两个 30s 子段直接走单曲 align+score
-    # （与 autoscore 切出的子段同内容、同一套 align+score 代码路径）
+    # 参照分：对实例1（songB 第一次）的劣化音频直接走单曲 align+score
+    # （与 autoscore 切出的实例同内容、同一套 align+score 代码路径）
     from musicq.align import align
     from musicq.report import compute_rows
-    occ1 = occs[1]
-    deg1 = rec_pieces[3]
-    cut1 = occ1["cut_trues"][1] - inst_starts[1]  # 子段边界（实例内相对秒）
-    ref_meds = []
-    for sub, (sa, sb) in enumerate([(0.0, cut1), (cut1, len(deg1) / sr)]):
-        sub_wav = base / f"ref_sub{sub}.wav"
-        sf.write(str(sub_wav), deg1[int(sa * sr):int(sb * sr)], sr, subtype="PCM_16")
-        al_ref = align(ref_dir / "songB_test.wav", ref_dir / "songB_markers.json",
-                       sub_wav, base / f"ref_single{sub}")
-        rows = compute_rows(al_ref, base / f"ref_single{sub}")
-        ref_meds.append(float(np.median([r["visqol"] for r in rows
-                                         if r.get("visqol") is not None])))
+    inst1_wav = base / "ref_single.wav"
+    sf.write(str(inst1_wav), rec_pieces[3], sr, subtype="PCM_16")
+    al_ref = align(ref_dir / "songB_test.wav", ref_dir / "songB_markers.json",
+                   inst1_wav, base / "ref_single")
+    ref_rows = compute_rows(al_ref, base / "ref_single")
+    ref_median = float(np.median([r["visqol"] for r in ref_rows
+                                  if r.get("visqol") is not None]))
 
     out_dir = base / "report"
     res = autoscore(rec_wav, ref_dir, out_dir)
-    return {"res": res, "occs": occs, "out_dir": out_dir, "ref_meds": ref_meds}
+    return {"res": res, "occs": occs, "out_dir": out_dir, "ref_median": ref_median}
 
 
 def test_autoscore_instances(autoscore_result):
-    """周期 leader 切分：3 次播放 × 各 2 个 leader → 6 个实例，歌名/循环全对。"""
+    """全局网格段发现：3 次播放 → 3 个实例段，歌名/循环全对。"""
     insts = autoscore_result["res"]["instances"]
     ids = [i["song_id"] for i in insts]
-    assert ids == ["songA", "songA", "songB", "songB", "songB", "songB"], \
-        f"实例切分/识别错误: {ids}"
-    assert [i["loop"] for i in insts] == [1, 1, 1, 1, 2, 2], \
+    assert ids == ["songA", "songB", "songB"], f"实例切分/识别错误: {ids}"
+    assert [i["loop"] for i in insts] == [1, 1, 2], \
         f"循环序号错误: {[i['loop'] for i in insts]}"
 
 
 def test_autoscore_alignment_accuracy(autoscore_result):
-    """每个 30s 实例的对齐精度与单曲流程同等水平。
+    """每个实例的对齐精度与单曲流程同等水平。
 
-    断言分解（autoscore 的实例时间轴由 leader 检测定义）：
+    断言分解（autoscore 实例时间轴由网格匹配定义，与单曲流程的绝对时间轴不同）：
+    - 段起点误差 < 3ms（实例起点 = 首标记推算位置 - 1.0s 固定余量，仅影响报告时间轴）
     - 各段速率比误差 < 0.2%（与单曲流程相同）
-    - leader 切点误差 < 3ms（仅影响报告时间轴）
     - 正文标记一致性：逐标记误差去常数后最大偏差 < 1.5ms
     """
     res, occs = autoscore_result["res"], autoscore_result["occs"]
-    assert len(res["instances"]) == 2 * len(occs)
-    for occ_i, occ in enumerate(occs):
-        truth = occ["truth"]
-        for sub in (0, 1):
-            inst = res["instances"][occ_i * 2 + sub]
-            cut_true = occ["cut_trues"][sub]
-            al = json.loads((Path(inst["align_dir"]) / "alignment.json")
-                            .read_text(encoding="utf-8"))
-            # leader 切点误差
-            cut_err = abs(inst["rec_start_s"] - cut_true)
-            assert cut_err < 0.003, \
-                f"实例{inst['instance']} leader 切点误差 {cut_err * 1000:.2f}ms"
-            # 各段速率比误差（真值由标记真值位置直接算，跨边界也精确）
-            for seg in al["segments"]:
-                t0, t1 = seg["ref_start_s"], seg["ref_end_s"]
-                r_true = ((truth["true_deg_times"][t1] - truth["true_deg_times"][t0])
-                          / (t1 - t0))
-                assert abs(seg["rate_ratio"] - r_true) < 0.002, \
-                    f"实例{inst['instance']} 段{seg['seg']} 速率误差超差"
-            # 正文标记一致性（去除实例常数偏移）
-            # 切点在劣化实例内的相对真值 = 该周期 leader 起点的真值位置
-            leader_ts = [l["start_s"] for l in occ["meta"]["leader"]["leaders"]]
-            cut_rel = truth["true_extra_times"][leader_ts[sub]]
-            errs = []
-            for m in al["matches"]:
-                t = m["ref_time_s"]
-                if t in truth["true_deg_times"]:
-                    errs.append(m["deg_time_s"] - (truth["true_deg_times"][t] - cut_rel))
-            assert errs, f"实例{inst['instance']} 无匹配标记"
-            med = float(np.median(errs))
-            spread = max(abs(e - med) for e in errs)
-            assert spread < 0.0015, \
-                f"实例{inst['instance']} 标记一致性 {spread * 1000:.2f}ms 超差"
+    assert len(res["instances"]) == len(occs)
+    for inst, occ in zip(res["instances"], occs):
+        truth, meta = occ["truth"], occ["meta"]
+        al = json.loads((Path(inst["align_dir"]) / "alignment.json")
+                        .read_text(encoding="utf-8"))
+        # 段起点：首匹配 marker 的录音位置 = 参考 marker 时刻 + 实例起点偏移
+        ref_t0 = meta["markers"][0]["time_s"]
+        true_m0 = occ["inst_start"] + truth["true_deg_times"][ref_t0]
+        start_err = abs(inst["rec_start_s"] - (true_m0 - 1.0))
+        assert start_err < 0.003, \
+            f"实例{inst['instance']} 段起点误差 {start_err * 1000:.2f}ms"
+        # 各段速率比误差（真值由标记真值位置直接算，跨边界也精确）
+        for seg in al["segments"]:
+            t0, t1 = seg["ref_start_s"], seg["ref_end_s"]
+            r_true = ((truth["true_deg_times"][t1] - truth["true_deg_times"][t0])
+                      / (t1 - t0))
+            assert abs(seg["rate_ratio"] - r_true) < 0.002, \
+                f"实例{inst['instance']} 段{seg['seg']} 速率误差超差"
+        # 正文标记一致性（去除实例常数偏移）
+        errs = []
+        for m in al["matches"]:
+            t = m["ref_time_s"]
+            if t in truth["true_deg_times"]:
+                errs.append(m["deg_time_s"] -
+                            (truth["true_deg_times"][t] - truth["delay_s"]))
+        assert errs, f"实例{inst['instance']} 无匹配标记"
+        med = float(np.median(errs))
+        spread = max(abs(e - med) for e in errs)
+        assert spread < 0.0015, \
+            f"实例{inst['instance']} 标记一致性 {spread * 1000:.2f}ms 超差"
 
 
 def test_autoscore_scores(autoscore_result):
-    """autoscore 30s 子段分数应与同内容单曲流程参照分一致（<0.1），报告产物齐全。"""
+    """autoscore 实例分数应与同内容单曲流程参照分一致（<0.1），报告产物齐全。"""
     res = autoscore_result["res"]
     rows = res["rows"]
-    ref_meds = autoscore_result["ref_meds"]
+    ref_median = autoscore_result["ref_median"]
     for inst in res["instances"]:
         vis = [r["visqol"] for r in rows
                if r["instance"] == inst["instance"] and r.get("visqol") is not None]
         assert vis, f"实例{inst['instance']} 没有 ViSQOL 分数"
         assert np.median(vis) >= 2.5, \
             f"实例{inst['instance']} ViSQOL 中位数 {np.median(vis):.3f} 异常偏低"
-    # 实例 2/3 = songB 第一次播放的两个子段，与参照分逐段对比
-    for sub, inst_i in ((0, 2), (1, 3)):
-        vis = [r["visqol"] for r in rows
-               if r["instance"] == inst_i and r.get("visqol") is not None]
-        med = float(np.median(vis))
-        assert abs(med - ref_meds[sub]) < 0.1, \
-            f"实例{inst_i} 中位数 {med:.3f} 与单曲参照 {ref_meds[sub]:.3f} 差距过大"
+    # 实例 1 = songB 第一次播放（与参照分同一份劣化音频），分数应接近
+    vis1 = [r["visqol"] for r in rows
+            if r["instance"] == 1 and r.get("visqol") is not None]
+    med1 = float(np.median(vis1))
+    assert abs(med1 - ref_median) < 0.1, \
+        f"实例1 中位数 {med1:.3f} 与单曲参照 {ref_median:.3f} 差距过大"
     out = autoscore_result["out_dir"]
     for f in ("report.csv", "summary.txt", "quality.png", "autoscore.json"):
         assert (out / f).exists(), f"缺少报告产物 {f}"

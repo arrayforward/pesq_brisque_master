@@ -151,13 +151,104 @@ def _validate_assignment(ref_m, deg_m, sr, ref_t, assign, det_t, n_probe=3):
     return float(np.mean(vals)) if vals else 0.0
 
 
+def _grid_align_dp(ref_t: list[float], ref_dir: list[str],
+                   det_t: np.ndarray, det_dir: list[str],
+                   interval: float, max_skip: int = 3,
+                   w_rate: float = 0.1, p_skip: float = 0.15) -> dict[int, int]:
+    """网格对齐动态规划：在假峰海里找全局最优的"参考标记→检测峰"映射。
+
+    贪心 walk 在假峰海里会被局部最优的假峰抢配（真机/仿真实测锚点对仍走歪）；
+    DP 取全局最优。代价设计：间隔比率约束在 [RATE_MIN, RATE_MAX]（硬约束，
+    容忍漏检 max_skip 个，每漏检一个加 p_skip），rate 偏差只做轻惩罚
+    （w_rate 小）——强劣化下真网格的 rate 惩罚（伸缩 0.95-1.05）会超过
+    假网格（rate=1.0 的随机一致序列），重惩罚反而让假网格赢；主导项是
+    匹配奖励 -1/步（真网格标记覆盖远多于假网格），错位假设由 top-K +
+    内容验证消歧（见 match_grid）。
+    返回 {marker序号: 峰序号}（空 dict 表示无 ≥3 个匹配的对齐）。
+    """
+    n_m, n_p = len(ref_t), len(det_t)
+    if n_p < 3 or n_m < 3:
+        return {}
+    NEG = 1e18
+    # dp[j] = 当前 marker i 匹配峰 j 的最小代价；par[j] = (prev_j, skip) 回溯
+    dp = np.full(n_p, NEG)
+    par: list[tuple[int, int] | None] = [None] * n_p
+    # 每个 marker 的合法峰（方向一致）
+    dir_arr = np.array(det_dir)
+
+    best_path: list[int] = []
+    best_cost = NEG
+    parents: dict[int, list] = {0: par}  # 每轮的回溯表快照（回溯按 marker 层查询）
+    for i in range(n_m):
+        legal = np.where(dir_arr == ref_dir[i])[0]
+        if len(legal) == 0:
+            continue  # 无方向一致峰：跳过该 marker（由转移的 skip 参数覆盖）
+        ndp = np.full(n_p, NEG)
+        npar: list[tuple[int, int] | None] = [None] * n_p
+        # 起点：录音可从任意 marker 开始（cost=0；i=0 无前驱，路径到此为止）
+        ndp[legal] = 0.0
+        if i > 0:
+            for j in legal:
+                npar[j] = ("START", -1)
+        if i > 0 and np.any(dp < NEG):
+            pj_idx = np.where(dp < NEG)[0]
+            pj_t = det_t[pj_idx]
+            pj_c = dp[pj_idx]
+            for j in legal:
+                tj = det_t[j]
+                for skip in range(0, max_skip + 1):
+                    ip = i - 1 - skip
+                    if ip < 0:
+                        break
+                    span_ref = ref_t[i] - ref_t[ip]
+                    lo = tj - RATE_MAX * span_ref
+                    hi = tj - RATE_MIN * span_ref
+                    m = (pj_t >= lo) & (pj_t <= hi)
+                    if not np.any(m):
+                        continue
+                    # 转移代价：速率偏差 + 漏检惩罚 - 匹配奖励（真网格长路径必胜）
+                    dt = tj - pj_t[m]
+                    rate = dt / span_ref
+                    costs = pj_c[m] + w_rate * np.abs(np.log(rate)) \
+                        + p_skip * skip - 1.0
+                    k = int(np.argmin(costs))
+                    if costs[k] < ndp[j]:
+                        ndp[j] = float(costs[k])
+                        npar[j] = (int(pj_idx[m][k]), skip)
+        dp, par = ndp, npar
+        parents[i] = npar
+        # 终点：任意 marker 可结束；跟踪全局最优
+        fin = np.where(dp < NEG)[0]
+        if len(fin):
+            k = fin[int(np.argmin(dp[fin]))]
+            # 回溯（按 marker 层查各自的历史 parent 表）
+            path = []
+            jj, ii = k, i
+            while jj >= 0 and ii in parents:
+                path.append((ii, jj))
+                p = parents[ii][jj]
+                if p is None or p[0] == "START":
+                    break
+                jj, skip = p
+                ii = ii - 1 - skip
+            if len(path) > len(best_path) \
+                    or (len(path) == len(best_path) and dp[k] < best_cost):
+                best_path, best_cost = path, float(dp[k])
+    if len(best_path) < 3:
+        return {}
+    return {i: j for i, j in best_path}
+
+
 def match_grid(ref_markers: list[dict], det_peaks: list[tuple[float, str]],
                cfg: ChirpConfig, ref_m=None, deg_m=None, sr=None,
-               ) -> tuple[dict[int, float], float]:
-    """把检测峰粗对应到参考标记序号，容忍漏检与离群点。
+               max_hypo: int = 4) -> tuple[dict[int, float], float]:
+    """把检测峰对应到参考标记序号，容忍漏检与离群点。
 
-    返回 ({标记序号: 检测时刻}, 内容验证得分)。提供 ref_m/deg_m/sr 时，
-    对得分相近的候选锚点做内容相关性验证消歧；否则验证得分为匹配数。
+    返回 ({标记序号: 检测时刻}, 内容验证得分)。
+    DP 网格对齐（_grid_align_dp）在几何上无法区分"同奇偶整数间隔错位"
+    （错位 2 格仍满足 5s 等间隔+方向兼容，且速率惩罚可能更小）——因此取
+    top-K 互异 DP 假设（每次移除上一轮最优路径的峰再 DP），用分块内容
+    验证消歧（正确匹配 0.6-0.95，错位 <0.1）。
     """
     ref_t = [m["time_s"] for m in ref_markers]
     ref_dir = [m["direction"] for m in ref_markers]
@@ -166,30 +257,29 @@ def match_grid(ref_markers: list[dict], det_peaks: list[tuple[float, str]],
     if len(det_t) < 3:
         raise RuntimeError(f"检测到 {len(det_t)} 个标记，不足以对齐")
 
-    candidates = _vote_anchors(ref_t, ref_dir, det_t, det_dir, cfg.interval_s)
-    # 先 walk 再按结果去重：同一平移假设只需验证一次（候选数可能远超 32 上限，
-    # 直接截断候选会把正确平移挤掉 —— 真机中段片段实测踩中）
-    unique: dict[tuple, tuple[int, dict]] = {}  # assign_key -> (vote, assign)
-    for score, mi0, pi0 in candidates:
-        assign = _walk_assign(ref_t, ref_dir, det_t, det_dir, mi0, pi0,
-                              cfg.interval_s)
-        if len(assign) < 3:
-            continue
-        key = tuple(sorted(assign.items()))
-        if key not in unique or score > unique[key][0]:
-            unique[key] = (score, assign)
-    # 按投票分排序，最多验证 16 个互异假设
-    hypos = sorted(unique.values(), key=lambda x: -x[0])[:16]
     best_assign, best_score = None, -1.0
-    for vote, assign in hypos:
+    rem_t = det_t.copy()
+    rem_d = list(det_dir)
+    orig_idx = np.arange(len(det_t))
+    for _ in range(max_hypo):
+        assign = _grid_align_dp(ref_t, ref_dir, rem_t, rem_d, cfg.interval_s)
+        if len(assign) < 3:
+            break
+        assign_orig = {i: int(orig_idx[j]) for i, j in assign.items()}
         if ref_m is not None:
-            v = _validate_assignment(ref_m, deg_m, sr, ref_t, assign, det_t)
+            v = _validate_assignment(ref_m, deg_m, sr, ref_t, assign_orig, det_t)
         else:
-            v = float(len(assign))  # 无信号时退化为覆盖数最多
+            v = float(len(assign))
         if v > best_score:
-            best_assign, best_score = assign, v
+            best_assign, best_score = assign_orig, v
+        # 移除本轮最优路径的峰，取下一互异假设
+        used = set(assign.values())
+        keep = np.array([k for k in range(len(rem_t)) if k not in used])
+        rem_t = rem_t[keep]
+        rem_d = [rem_d[k] for k in keep]
+        orig_idx = orig_idx[keep]
     if best_assign is None:
-        raise RuntimeError("网格匹配失败：所有候选锚点覆盖的标记都太少")
+        raise RuntimeError("网格匹配失败：找不到一致的网格对齐（检测峰太少或音频不符）")
     return ({int(i): float(det_t[best_assign[i]]) for i in sorted(best_assign)},
             float(best_score))
 
@@ -230,8 +320,8 @@ def _refine_marker(xb: np.ndarray, sr: int, cfg: ChirpConfig, up: bool,
         res = try_rate(rr)
         if res and (best is None or res[1] > best[1]):
             best = (res[0], res[1], rr)
-    if best is None or best[1] < 0.2:
-        return t_pred  # 相关质量太差，维持原估计
+    if best is None:
+        return t_pred, 0.0
     # 细定位：best±0.002 三点对 q(r) 做抛物线拟合得最优速率 r*，再用 r* 精修一次
     # （直接按 max-q 选网格点会引入 ±半格 × 偏差斜率(≈200ms/unit) 的选格噪声）
     lo = try_rate(best[2] - 0.002)
@@ -243,16 +333,18 @@ def _refine_marker(xb: np.ndarray, sr: int, cfg: ChirpConfig, up: bool,
             dr = float(np.clip(0.002 * 0.5 * (y0 - y2) / denom, -0.002, 0.002))
             res = try_rate(best[2] + dr)
             if res and res[1] > best[1] - 0.02:  # 允许微小 q 波动，换更准的速率
-                return res[0]
-    return best[0]
+                return res[0], float(res[1])
+    return best[0], float(best[1])
 
 
 def calibrate_positions(ref_markers: list[dict], coarse: dict[int, float],
                         deg_mono: np.ndarray, sr: int, cfg: ChirpConfig,
-                        rounds: int = 2) -> dict[int, float]:
+                        rounds: int = 2, q_min: float = 0.2) -> dict[int, float]:
     """迭代精修标记位置：由当前位置估计各段速率 → 用伸缩匹配模板重定位 → 重估速率。
 
-    最后补救单点漏检并剔除离群误配。
+    精修质量 q<q_min 时先用 ±300ms 大窗口重试（DP 的假峰匹配 rate=1.0 占优时
+    位置误差可达 ±300ms，超出正常 ±40ms 窗口），仍低于阈值则剔除该 marker
+    （假峰不可修，段端点用相邻 marker 更稳）。最后补救单点漏检并剔除离群误配。
     """
     from .chirp import _bandpass
     ref_t = [m["time_s"] for m in ref_markers]
@@ -269,8 +361,16 @@ def calibrate_positions(ref_markers: list[dict], coarse: dict[int, float],
         for i in keys:
             # chirp 落在该标记"之后"的区间内，优先取后向段速率
             r_loc = seg_rate.get((i, i + 1), seg_rate.get((i - 1, i), 1.0))
-            new_pos[i] = _refine_marker(xb, sr, cfg, ref_dir[i] == "up",
-                                        pos[i], r_loc)
+            p, q = _refine_marker(xb, sr, cfg, ref_dir[i] == "up",
+                                  pos[i], r_loc, win_ms=40.0)
+            if q < q_min:
+                # 位置误差可能远超正常窗口（DP 假峰），大窗口重试一次
+                p2, q2 = _refine_marker(xb, sr, cfg, ref_dir[i] == "up",
+                                        pos[i], r_loc, win_ms=300.0)
+                if q2 > q:
+                    p, q = p2, q2
+            if q >= q_min:
+                new_pos[i] = p  # 质量过低的假峰直接剔除（不加进 new_pos）
         pos = new_pos
 
     # 单点漏检补救：仅当左右相邻段速率一致（说明空洞不在伸缩边界上）时内插
@@ -347,7 +447,9 @@ def align(ref_wav: Path, markers_json: Path, deg_wav: Path, out_dir: Path,
     deg = load_for_align(deg_wav, sr)
 
     det = detect_markers(_to_mono(deg).astype(np.float64), sr, cfg)
-    det = strip_leader_clusters(det, cfg)  # leader 簇不参与正文网格匹配
+    # 不做 leader 簇剔除：DP 网格对齐天然免疫——leader 簇（150ms 间隔）不构成
+    # 5s 网格，不会被 DP 选中；而簇级检测在正文标记位置会产生假 leader
+    # （正文单 chirp 对簇模板的高部分匹配），剔除会误伤真标记（实测踩中）。
     print(f"检测到 {len(det)} 个正文标记（参考 {len(meta['markers'])} 个）")
     coarse, _ = match_grid(meta["markers"], det, cfg,
                            ref_m=_to_mono(ref).astype(np.float64),
