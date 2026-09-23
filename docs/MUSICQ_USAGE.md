@@ -19,7 +19,7 @@
 | 组件 | 位置 | 说明 |
 |---|---|---|
 | testplayer.apk | `release/testplayer-debug.apk` | 极简测试播放器，内置夜曲/海阔天空两首带标记测试音频（standard 预设，适用于 scrcpy/A2DP 数字通道；声学通道测试请用 acoustic 预设生成的音频走被测 App 播放） |
-| Windows 程序 | `release/musicq-tool-windows.zip` | 解压即用，含 GUI + 冻结算法引擎，不依赖本机 Python |
+| Windows 程序 | `release/musicq-tool-windows.zip` | 解压即用，含 GUI + 冻结算法引擎 + **reference/（testplayer 配套参考音频，逐字节一致）**，不依赖本机 Python |
 | CLI 引擎（开发态） | `tools/musicq/` | Python 管线，功能与 GUI 一致，可脚本化 |
 | GUI 源码 | `tools/musicq_gui/` | C++/Qt6，需 VS2022 + Qt 6.8.3 构建 |
 
@@ -27,6 +27,9 @@
 不含 DAC/扬声器/环境噪声；时间伸缩被对齐算法撤销，WSOLA 引入的频谱涂抹等真实损伤保留扣分。
 
 ## 快速开始（发布包，三步）
+
+使用 testplayer 测试时**无需运行「音源生成」**——发布包 `reference/` 已内置与
+testplayer APK 逐字节一致的参考音频（GUI 评估 Tab 的参考目录已默认填好）。
 
 ### 0. 前置条件
 
@@ -116,11 +119,14 @@ mic 实测会把外放音乐压到接近底噪，导致 leader 无法检出—�
 
 ### 3. 评估
 
-「评估」Tab：确认采集 wav 和参考目录（含 `*_test.wav` + `*_markers.json`，
-testplayer 两首歌的参考文件在生成输出目录，如 `D:\music\musicq_out`）→「开始评估」。
+「评估」Tab：确认采集 wav 和参考目录（**使用 testplayer 时无需修改**——默认已指向
+发布包内置的 `reference/`，即 testplayer 内置音频的逐字节一致参考文件）→「开始评估」。
 
-引擎自动完成：leader 检测 → 循环实例切分 → 歌曲识别 → 逐段对齐 → 打分。
+引擎自动完成：网格段发现 → 歌曲识别 → 逐段对齐 → 打分。
 结果显示每次循环一行（歌名/起止时间/ViSQOL 中位数/SNR）+ 聚合统计 + 质量曲线。
+
+> 用自己的曲库测试时，才需要「音源生成」生成对应的 `*_test.wav` + `*_markers.json`
+> 并把参考目录指向生成输出目录（见下方"进阶：用自己的曲库"）。
 
 ## 报告解读
 
@@ -157,6 +163,15 @@ testplayer 两首歌的参考文件在生成输出目录，如 `D:\music\musicq_
 | GUI 提示找不到引擎 | 发布目录结构被破坏，`engine/` 必须与 `musicq_tool.exe` 同级 |
 | 与开发态 CLI 分数有 ~0.15 差异 | 发布引擎走纯 NumPy 路径（无 numba），浮点细节差异。**对比实验固定用同一引擎** |
 | 评估很慢 | ViSQOL 逐段计算约 0.5×实时，属正常；开发态可装 `visqol-python[accel]` 加速约 8× |
+
+## 进阶：用自己的曲库
+
+testplayer 测试无需「音源生成」（发布包 `reference/` 已含配套参考）。要测自己的曲库时：
+
+1. 「音源生成」Tab：选曲库目录 → 输出目录 → **预设**（standard=数字通道，
+   acoustic=声学通道）→「开始生成」，产出 `<名称>_test.wav` + `<名称>_markers.json`；
+2. 把 `*_test.wav` 上传到设备用被测 App 播放（或拷到 testplayer assets 重建 APK）；
+3. 采集后，「评估」Tab 把参考目录改为生成输出目录。
 
 ## 进阶：chirp 参数调优
 

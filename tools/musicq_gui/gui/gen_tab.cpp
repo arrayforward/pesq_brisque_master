@@ -21,6 +21,12 @@ GenTab::GenTab(QWidget* parent) : QWidget(parent), proc_(new ProcRunner(this)) {
     auto* group = new QGroupBox(tr("测试音频生成（叠加 leader + chirp 导频）"));
     auto* form = new QVBoxLayout(group);
 
+    auto* hint = new QLabel(tr("提示：发布包已内置 testplayer 配套参考音频（reference/），"
+                               "使用 testplayer 测试时无需生成，直接用「评估」即可。"));
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color:#8ab4f8;");
+    form->addWidget(hint);
+
     auto* srcRow = new QHBoxLayout;
     srcEdit_ = new QLineEdit(QStringLiteral("D:/music"));
     auto* srcBtn = new QPushButton(tr("浏览…"));

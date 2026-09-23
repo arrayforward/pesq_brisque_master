@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -52,8 +53,15 @@ EvalTab::EvalTab(QWidget* parent) : QWidget(parent), proc_(new ProcRunner(this))
                 if (!d.isEmpty()) edit->setText(d);
             });
     };
+    // 参考目录默认：优先发布包内置的 testplayer 配套参考（<exe同级>/reference/
+    // 且含 *_markers.json），否则 D:/music/musicq_out（用户仍可改）
+    QString defaultRef = QStringLiteral("D:/music/musicq_out");
+    const QString bundledRef = QCoreApplication::applicationDirPath()
+                               + QStringLiteral("/reference");
+    if (QDir(bundledRef).entryList({"*_markers.json"}, QDir::Files).size() > 0)
+        defaultRef = bundledRef;
     mkRow(tr("采集 wav:"), wavEdit_, {}, true, tr("选择采集 wav"));
-    mkRow(tr("参考目录:"), refEdit_, QStringLiteral("D:/music/musicq_out"), false,
+    mkRow(tr("参考目录:"), refEdit_, defaultRef, false,
           tr("含 *_test.wav / *_markers.json 的目录"));
     mkRow(tr("报告输出:"), outEdit_, {}, false, tr("报告输出目录"));
 
