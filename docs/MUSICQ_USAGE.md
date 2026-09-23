@@ -18,7 +18,7 @@
 
 | 组件 | 位置 | 说明 |
 |---|---|---|
-| testplayer.apk | `release/testplayer-debug.apk` | 极简测试播放器，内置夜曲/海阔天空两首带标记测试音频 |
+| testplayer.apk | `release/testplayer-debug.apk` | 极简测试播放器，内置夜曲/海阔天空两首带标记测试音频（standard 预设，适用于 scrcpy/A2DP 数字通道；声学通道测试请用 acoustic 预设生成的音频走被测 App 播放） |
 | Windows 程序 | `release/musicq-tool-windows.zip` | 解压即用，含 GUI + 冻结算法引擎，不依赖本机 Python |
 | CLI 引擎（开发态） | `tools/musicq/` | Python 管线，功能与 GUI 一致，可脚本化 |
 | GUI 源码 | `tools/musicq_gui/` | C++/Qt6，需 VS2022 + Qt 6.8.3 构建 |
@@ -147,7 +147,9 @@ testplayer 两首歌的参考文件在生成输出目录，如 `D:\music\musicq_
 |---|---|
 | 采集结果为全静音 | 目标 App 设了 `allowAudioPlaybackCapture=false`，或设备策略连 shell 播放捕获也禁了。换 testplayer 验证链路；确认 scrcpy ≥ 2.0、Android ≥ 11 |
 | 采集电平远低于参考 | 采集电平跟随设备**媒体音量**，建议采集前把媒体音量拉满。电平差异不影响 ViSQOL（内部有电平归一化）；SNR/segSNR/THD+N 已做最小二乘增益校正（`g=<ref,deg>/<ref,ref>`），电平差不会误伤指标 |
-| autoscore 识别不出歌曲（全 unknown） | 采集电平过低、chirp 频段被链路滤掉（蓝牙 SBC、下行音效）。检查采集 wav 频谱 10~14kHz 是否有能量；必要时降 chirp 频段重新生成（见参数调优） |
+| autoscore 识别不出歌曲（全 unknown） | 采集电平过低、chirp 频段被链路滤掉（蓝牙 SBC、下行音效）。检查采集 wav 频谱 chirp 频段是否有能量；必要时降频段重新生成（见参数调优） |
+| chirp 检出率低 / 大量漏段 | **声学通道（mic/Line-in）最常见原因是用 standard 预设的测试音频**——10-14kHz 在扬声器/房间/mic 链路剧烈滚降。用 acoustic 预设重新生成测试音频（GUI 音源生成 Tab 可选）。另外确认 PC 输入设备的降噪/AEC 已关闭 |
+| 参考目录与播放音频不配套 | 播放的 test.wav 和 `--ref-dir` 里的参考必须是**同一次生成、同一预设**的文件。混用 standard/acoustic 两套文件会识别失败 |
 | 提示"未检测到任何 leader" | 录音短于 leader 间隔（v3 测试音频每 30s 一个）。保证录音 ≥35s；旧版（v2，仅歌头有 leader）测试音频需重新用 v3 生成 |
 | 报告里 `peaq_odg: 不可用` | 正常。PEAQ 是专利受限技术，无自由分发的实现，发布包未内置；主指标 ViSQOL 不受影响。需要 PEAQ 见下文"进阶：接入 PEAQ" |
 | 识别对但大量漏段 | 伸缩过于剧烈（速率比超出 [0.9, 1.1] clamp）或采集中断。看 autoscore.json 明细 |
